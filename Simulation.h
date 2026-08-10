@@ -15,6 +15,16 @@ public:
     int getHeight() const { return height; }
     int getTick() const { return tick; }
     
+    // Публичные параметры для Live Tuning из GUI
+    float sunlight_base;
+    float fertility_decay;
+    float mutation_step;
+    float replace_factor;
+    float initial_herbivore_ratio;
+    
+    // Метод для ручного добавления животных во время симуляции
+    void addAnimals(int count);
+    
 private:
     int width, height;
     int tick = 0;
@@ -26,10 +36,6 @@ private:
     std::vector<Cell>* nextGrid;
     
     std::vector<int> cellIndices;
-    
-    float sunlight_base;
-    float fertility_decay;
-    float mutation_step;
     
     void processCell(int x, int y, std::mt19937& rng);
 };
