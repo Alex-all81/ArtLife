@@ -2,11 +2,20 @@
 #include <fstream>
 #include <execution>
 #include <algorithm>
+#include <filesystem>
+#include <chrono>
+#include <iomanip>
+#include <sstream>
 #include <nlohmann/json.hpp>
+
+namespace fs = std::filesystem;
 
 Simulation::Simulation(const std::string& configFile) {
     std::ifstream f(configFile);
-    nlohmann::json config = nlohmann::json::parse(f);
+    nlohmann::json config;
+    if (f.is_open()) {
+        config = nlohmann::json::parse(f);
+    }
     
     width = config.value("grid_width", 256);
     height = config.value("grid_height", 256);
@@ -15,6 +24,9 @@ Simulation::Simulation(const std::string& configFile) {
     mutation_step = config.value("mutation_step", 0.1f);
     replace_factor = config.value("replace_factor", 0.1f);
     initial_herbivore_ratio = config.value("initial_herbivore_ratio", 0.5f);
+    record_interval = config.value("record_interval", 500);
+    records_dir = config.value("records_dir", "records");
+    saves_dir = config.value("saves_dir", "saves");
     
     int numAnimals = config.value("initial_animals", 1000);
     int numPlants = config.value("initial_plants", 5000);
@@ -23,22 +35,33 @@ Simulation::Simulation(const std::string& configFile) {
     gridB.resize(width * height);
     currentGrid = &gridA;
     nextGrid = &gridB;
-    
     cellIndices.resize(width * height);
     std::iota(cellIndices.begin(), cellIndices.end(), 0);
     
-    std::mt19937 rng(42);
+    ensureDirectoriesExist();
     
-    for(int i = 0; i < numPlants; ++i) {
-        int idx = rng() % (width * height);
-        Plant p; 
-        p.alive = true;
-        p.energy = 5.0f;
-        (*currentGrid)[idx].plants.push_back(p);
-    }
+    // Генерация уникального ID сессии (Timestamp)
+    auto now = std::chrono::system_clock::now();
+    auto in_time_t = std::chrono::system_clock::to_time_t(now);
+    std::stringstream ss;
+    ss << std::put_time(std::localtime(&in_time_t), "%Y%m%d_%H%M%S");
+    session_id = ss.str();
     
-    // Инициализация животных через общий метод
+    fs::create_directories(records_dir + "/" + session_id);
+    
+    addPlants(numPlants);
     addAnimals(numAnimals);
+}
+
+Simulation::~Simulation() {
+    // Автосохранение при выходе
+    std::string save_path = saves_dir + "/save_" + session_id + "_tick" + std::to_string(tick) + ".bin";
+    saveSnapshot(save_path);
+}
+
+void Simulation::ensureDirectoriesExist() {
+    fs::create_directories(records_dir);
+    fs::create_directories(saves_dir);
 }
 
 void Simulation::addAnimals(int count) {
@@ -50,16 +73,25 @@ void Simulation::addAnimals(int count) {
             a.alive = true; 
             a.id = rng();
             a.energy = a.genes.size * 10.0f;
-            
-            // Распределение диеты в зависимости от конфига
             float rand_val = (float)(rng() % 100) / 100.0f;
             if (rand_val < initial_herbivore_ratio) {
-                a.genes.dietBias = (float)(rng() % 30) / 100.0f; // 0.0 - 0.3 (травоядные)
+                a.genes.dietBias = (float)(rng() % 30) / 100.0f;
             } else {
-                a.genes.dietBias = 0.7f + (float)(rng() % 30) / 100.0f; // 0.7 - 1.0 (хищники)
+                a.genes.dietBias = 0.7f + (float)(rng() % 30) / 100.0f;
             }
             (*currentGrid)[idx].animal = a;
         }
+    }
+}
+
+void Simulation::addPlants(int count) {
+    std::mt19937 rng(std::random_device{}());
+    for(int i = 0; i < count; ++i) {
+        int idx = rng() % (width * height);
+        Plant p; 
+        p.alive = true;
+        p.energy = 5.0f;
+        (*currentGrid)[idx].plants.push_back(p);
     }
 }
 
@@ -81,6 +113,12 @@ void Simulation::update() {
     
     std::swap(currentGrid, nextGrid);
     tick++;
+    
+    // Автоматическая запись кадров визуализации
+    if (record_interval > 0 && tick % record_interval == 0) {
+        std::string frame_path = records_dir + "/" + session_id + "/frame_" + std::to_string(tick) + ".bin";
+        saveSnapshot(frame_path);
+    }
 }
 
 void Simulation::processCell(int x, int y, std::mt19937& rng) {
@@ -185,40 +223,87 @@ void Simulation::processCell(int x, int y, std::mt19937& rng) {
             (*nextGrid)[idx].lock.clear(std::memory_order_release);
         }
     }
+}
+
+// --- СЕРИАЛИЗАЦИЯ ---
+void Simulation::saveSnapshot(const std::string& filepath) {
+    std::ofstream out(filepath, std::ios::binary);
+    if (!out) return;
     
-    // РАСТЕНИЯ
-    for(size_t i = 0; i < cCell.plants.size(); ++i) {
-        if (plantEaten && i == cCell.plants.size() - 1) continue; 
-        
-        Plant p = cCell.plants[i];
-        p.energy += sunlight_base * p.genes.power * cCell.fertility;
-        p.energy -= p.genes.size * 0.1f;
-        
-        if (p.energy > 15.0f) {
-            p.energy -= 8.0f;
-            int dx = (rng() % 3) - 1;
-            int dy = (rng() % 3) - 1;
-            int nIdx = ((y + dy + height) % height) * width + ((x + dx + width) % width);
-            
-            while((*nextGrid)[nIdx].lock.test_and_set(std::memory_order_acquire));
-            if ((*nextGrid)[nIdx].plants.size() < 2) { 
-                Plant child = p;
-                child.energy = 5.0f;
-                (*nextGrid)[nIdx].plants.push_back(child);
-            }
-            (*nextGrid)[nIdx].lock.clear(std::memory_order_release);
+    out.write(reinterpret_cast<const char*>(&tick), sizeof(tick));
+    out.write(reinterpret_cast<const char*>(&width), sizeof(width));
+    out.write(reinterpret_cast<const char*>(&height), sizeof(height));
+    
+    for (const auto& cell : *currentGrid) {
+        out.write(reinterpret_cast<const char*>(&cell.animal), sizeof(Animal));
+        size_t pSize = cell.plants.size();
+        out.write(reinterpret_cast<const char*>(&pSize), sizeof(pSize));
+        for (const auto& p : cell.plants) {
+            out.write(reinterpret_cast<const char*>(&p), sizeof(Plant));
         }
-        
-        if(p.energy > 0) {
-            while((*nextGrid)[idx].lock.test_and_set(std::memory_order_acquire));
-            if ((*nextGrid)[idx].plants.size() < 2) {
-                (*nextGrid)[idx].plants.push_back(p);
-            }
-            (*nextGrid)[idx].lock.clear(std::memory_order_release);
-        } else {
-            while((*nextGrid)[idx].lock.test_and_set(std::memory_order_acquire));
-            (*nextGrid)[idx].fertility += p.genes.size * 0.2f; 
-            (*nextGrid)[idx].lock.clear(std::memory_order_release);
+        out.write(reinterpret_cast<const char*>(&cell.fertility), sizeof(float));
+        out.write(reinterpret_cast<const char*>(&cell.carrion), sizeof(float));
+    }
+}
+
+bool Simulation::loadSnapshot(const std::string& filepath) {
+    std::ifstream in(filepath, std::ios::binary);
+    if (!in) return false;
+    
+    int r_tick, r_w, r_h;
+    in.read(reinterpret_cast<char*>(&r_tick), sizeof(r_tick));
+    in.read(reinterpret_cast<char*>(&r_w), sizeof(r_w));
+    in.read(reinterpret_cast<char*>(&r_h), sizeof(r_h));
+    
+    if (r_w != width || r_h != height) return false; // Защита от смены разрешения
+    
+    tick = r_tick;
+    for (auto& cell : *currentGrid) {
+        cell.plants.clear();
+        in.read(reinterpret_cast<char*>(&cell.animal), sizeof(Animal));
+        size_t pSize;
+        in.read(reinterpret_cast<char*>(&pSize), sizeof(pSize));
+        for (size_t i = 0; i < pSize; ++i) {
+            Plant p;
+            in.read(reinterpret_cast<char*>(&p), sizeof(Plant));
+            cell.plants.push_back(p);
+        }
+        in.read(reinterpret_cast<char*>(&cell.fertility), sizeof(float));
+        in.read(reinterpret_cast<char*>(&cell.carrion), sizeof(float));
+    }
+    
+    // Создаем новую сессию, чтобы не перезаписывать старую историю кадров
+    auto now = std::chrono::system_clock::now();
+    auto in_time_t = std::chrono::system_clock::to_time_t(now);
+    std::stringstream ss;
+    ss << std::put_time(std::localtime(&in_time_t), "%Y%m%d_%H%M%S");
+    session_id = ss.str() + "_continued";
+    fs::create_directories(records_dir + "/" + session_id);
+    
+    return true;
+}
+
+std::map<std::string, GeneStats> Simulation::getGeneStatistics() const {
+    std::vector<float> diet, size, speed, power;
+    for (const auto& cell : *currentGrid) {
+        if (cell.animal.alive) {
+            diet.push_back(cell.animal.genes.dietBias);
+            size.push_back(cell.animal.genes.size);
+            speed.push_back(cell.animal.genes.speed);
+            power.push_back(cell.animal.genes.power);
         }
     }
+    
+    auto calc = [](std::vector<float>& vec) -> GeneStats {
+        if (vec.empty()) return {0, 0, 0};
+        std::sort(vec.begin(), vec.end());
+        return { vec.front(), vec.back(), vec[vec.size() / 2] };
+    };
+    
+    return {
+        {"Diet (0=Herb, 1=Carn)", calc(diet)},
+        {"Size", calc(size)},
+        {"Speed", calc(speed)},
+        {"Power", calc(power)}
+    };
 }
