@@ -1,0 +1,10 @@
+{
+  "grid_width": 256,
+  "grid_height": 256,
+  "initial_animals": 1000,
+  "initial_plants": 5000,
+  "sunlight_base": 1.5,
+  "fertility_decay": 0.001,
+  "mutation_step": 0.1,
+  "replace_factor": 0.1
+}
