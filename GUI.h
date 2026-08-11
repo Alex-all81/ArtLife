@@ -4,6 +4,7 @@
 #include <vector>
 #include <cstdint>
 #include <string>
+#include <map>
 
 class GUI {
 public:
@@ -11,7 +12,7 @@ public:
     ~GUI();
     
     void run();
-    
+
 private:
     Simulation& simulation;
     SDL_Window* window;
@@ -19,19 +20,19 @@ private:
     
     void renderImGui();
     uint32_t getHeatmapColor(float value); 
-    void drawLegend(); // Отрисовка легенды
-    void renderGeneWindow(); // Окно распределения генов
-    void renderFileMenu(); // Меню загрузки сохранений
+    void drawLegend(); 
+    void renderGeneWindow(); 
+    void renderFileMenu(); 
     
     unsigned int gridTexture; 
     std::vector<uint32_t> pixelBuffer;
-    
+
     enum ViewMode {
         VIEW_CLASSIC = 0,
         VIEW_ANIMALS_ONLY,
         VIEW_PLANTS_ONLY,
         VIEW_PLANT_DENSITY,
-        VIEW_HEATMAP_ENERGY,  // Новое: энергия
+        VIEW_HEATMAP_ENERGY,
         VIEW_HEATMAP_DIET,
         VIEW_HEATMAP_SIZE,
         VIEW_HEATMAP_SPEED,
@@ -40,15 +41,21 @@ private:
     int currentViewMode = VIEW_CLASSIC;
     
     int animalsToAdd = 500;
-    int plantsToAdd = 1000;
+    int plantsToAdd = 5000;
     
     bool isPaused = false;
     char loadPathBuffer[256] = "";
-    
-    // Кеш статистики для окна справа
+
+    // --- Переменные для интерактивной подсветки тепловых карт ---
+    bool isHighlighting = false;
+    float highlightValue = 0.5f;
+    float highlightDeviation = 0.1f;
+
+    // Кеш статистики генов
     int lastStatTick = -1;
+    bool forceStatsUpdate = true;
     std::map<std::string, GeneStats> geneStatsCache;
-    
+
     int maxHistory = 1000;
     int lastRecordedTick = -1;
     std::vector<float> historyTicks;
