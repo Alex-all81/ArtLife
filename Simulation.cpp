@@ -24,6 +24,8 @@ Simulation::Simulation(const std::string& configFile) {
     mutation_step = config.value("mutation_step", 0.1f);
     replace_factor = config.value("replace_factor", 0.1f);
     initial_herbivore_ratio = config.value("initial_herbivore_ratio", 0.5f);
+    maxAge = config.value("base_max_age", 250);
+
     record_interval = config.value("record_interval", 500);
     records_dir = config.value("records_dir", "records");
     saves_dir = config.value("saves_dir", "saves");
@@ -137,10 +139,19 @@ void Simulation::processCell(int x, int y, std::mt19937& rng) {
     if(cCell.animal.alive) {
         Animal a = cCell.animal;
         float maxEnergy = a.genes.size * 10.0f;
+        
+        a.age++; // Животное стареет
+        
+        // Динамический максимальный возраст (крупные живут чуть дольше)
+        int maxAge = maxAge + static_cast<int>(a.genes.size * 20);
+        
+        // Базовый расход энергии на жизнь
         a.energy -= (a.genes.size * 0.05f + (a.genes.sight + a.genes.smell) * 0.2f + 0.3f);
         
-        if(a.energy > 0) {
-            // Питание
+        // Проверка: животное живо, если есть энергия И не наступила старость
+        if(a.energy > 0 && a.age < maxAge) {
+            
+            // --- Питание ---
             if (a.genes.dietBias < 0.5f) { 
                 if (!cCell.plants.empty()) {
                     a.energy += 15.0f;
@@ -162,6 +173,7 @@ void Simulation::processCell(int x, int y, std::mt19937& rng) {
                 a.energy -= maxEnergy * 0.4f;
                 Animal child = a;
                 child.id = rng();
+                child.age = 0; // Потомок рождается с нулевым возрастом
                 child.energy = maxEnergy * 0.4f;
                 
                 // Функция-помощник для мутации отдельного гена
@@ -202,31 +214,60 @@ void Simulation::processCell(int x, int y, std::mt19937& rng) {
                 }
             }
             
-            // Движение
+            // --- Движение ---
             int dx = (rng() % 3) - 1;
             int dy = (rng() % 3) - 1;
             int nIdx = ((y + dy + height) % height) * width + ((x + dx + width) % width);
             
             bool moved = false;
-            if(!(*nextGrid)[nIdx].lock.test_and_set(std::memory_order_acquire)) {
-                if(!(*nextGrid)[nIdx].animal.alive) {
-                    (*nextGrid)[nIdx].animal = a;
-                    moved = true;
-                }
-                (*nextGrid)[nIdx].lock.clear(std::memory_order_release);
+            
+            // Если животное пытается двигаться (не стоит на месте)
+            if (dx != 0 || dy != 0) {
+                // Дополнительный штраф за вес при перемещении
+                float moveCost = a.genes.size * 0.1f + 0.1f;
+                a.energy -= moveCost;
             }
             
-            if(!moved) {
+            // Перемещение (только если после штрафа за движение осталась энергия)
+            if (a.energy > 0) {
+                if(!(*nextGrid)[nIdx].lock.test_and_set(std::memory_order_acquire)) {
+                    if(!(*nextGrid)[nIdx].animal.alive) {
+                        (*nextGrid)[nIdx].animal = a;
+                        moved = true;
+                    }
+                    (*nextGrid)[nIdx].lock.clear(std::memory_order_release);
+                }
+            }
+            
+            if(!moved && a.energy > 0) {
                 while((*nextGrid)[idx].lock.test_and_set(std::memory_order_acquire));
                 if(!(*nextGrid)[idx].animal.alive) {
                     (*nextGrid)[idx].animal = a;
                 }
                 (*nextGrid)[idx].lock.clear(std::memory_order_release);
             }
+            
+            // Если энергия упала ниже нуля при попытке сдвинуться:
+            if (a.energy <= 0) {
+                while((*nextGrid)[idx].lock.test_and_set(std::memory_order_acquire));
+                (*nextGrid)[idx].carrion += a.genes.size * 0.2f; // Голодная смерть на ходу
+                (*nextGrid)[idx].lock.clear(std::memory_order_release);
+            }
+            
         } else {
-            // Смерть от голода
+            // --- Смерть (от голода или старости) ---
             while((*nextGrid)[idx].lock.test_and_set(std::memory_order_acquire));
-            (*nextGrid)[idx].carrion += a.genes.size * 5.0f;
+            
+            if (a.energy <= 0) {
+                // Смерть от истощения: мясо съедено самим организмом
+                (*nextGrid)[idx].carrion += a.genes.size * 0.2f; 
+            } else {
+                // Смерть от старости: оставляет целую тушу
+                (*nextGrid)[idx].carrion += a.genes.size * 5.0f; 
+            }
+            // В любом случае обогащает почву
+            (*nextGrid)[idx].fertility += a.genes.size * 0.2f; 
+            
             (*nextGrid)[idx].lock.clear(std::memory_order_release);
         }
     }

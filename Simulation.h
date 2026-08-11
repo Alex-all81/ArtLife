@@ -29,6 +29,7 @@ public:
     float mutation_step;
     float replace_factor;
     float initial_herbivore_ratio;
+    int maxAge{250};
     
     int record_interval;
     std::string records_dir;

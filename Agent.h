@@ -18,6 +18,7 @@ struct Genes {
 struct Animal {
     uint32_t id = 0;
     Genes genes;
+    int age = 0;
     float energy = 10.0f;
     bool alive = false;
 };
