@@ -88,10 +88,17 @@ void Simulation::addPlants(int count) {
     std::mt19937 rng(std::random_device{}());
     for(int i = 0; i < count; ++i) {
         int idx = rng() % (width * height);
-        Plant p; 
-        p.alive = true;
-        p.energy = 5.0f;
-        (*currentGrid)[idx].plants.push_back(p);
+        // Проверяем лимит ячейки перед посадкой
+        if ((*currentGrid)[idx].plants.size() < 2) {
+            Plant p; 
+            p.alive = true;
+            p.energy = 15.0f; // Большой стартовый запас энергии
+            (*currentGrid)[idx].plants.push_back(p);
+            
+            // ВАЖНО: Добавляем удобрение при искусственной высадке, 
+            // иначе на поздних этапах игры ростки умрут от голода
+            (*currentGrid)[idx].fertility += 0.5f; 
+        }
     }
 }
 
@@ -126,7 +133,7 @@ void Simulation::processCell(int x, int y, std::mt19937& rng) {
     Cell& cCell = (*currentGrid)[idx];
     bool plantEaten = false; 
     
-    // ЖИВОТНЫЕ
+    // ================== ЖИВОТНЫЕ ==================
     if(cCell.animal.alive) {
         Animal a = cCell.animal;
         float maxEnergy = a.genes.size * 10.0f;
@@ -220,6 +227,45 @@ void Simulation::processCell(int x, int y, std::mt19937& rng) {
             // Смерть от голода
             while((*nextGrid)[idx].lock.test_and_set(std::memory_order_acquire));
             (*nextGrid)[idx].carrion += a.genes.size * 5.0f;
+            (*nextGrid)[idx].lock.clear(std::memory_order_release);
+        }
+    }
+    
+    // ================== РАСТЕНИЯ ==================
+    for(size_t i = 0; i < cCell.plants.size(); ++i) {
+        if (plantEaten && i == cCell.plants.size() - 1) continue; 
+        
+        Plant p = cCell.plants[i];
+        
+        // ВАЖНО: Добавлен базовый фотосинтез (0.1f + fertility). 
+        // Теперь растения будут медленно расти даже на истощенной земле.
+        p.energy += sunlight_base * p.genes.power * (0.1f + cCell.fertility);
+        p.energy -= p.genes.size * 0.1f;
+        
+        if (p.energy > 15.0f) {
+            p.energy -= 8.0f;
+            int dx = (rng() % 3) - 1;
+            int dy = (rng() % 3) - 1;
+            int nIdx = ((y + dy + height) % height) * width + ((x + dx + width) % width);
+            
+            while((*nextGrid)[nIdx].lock.test_and_set(std::memory_order_acquire));
+            if ((*nextGrid)[nIdx].plants.size() < 2) { 
+                Plant child = p;
+                child.energy = 5.0f;
+                (*nextGrid)[nIdx].plants.push_back(child);
+            }
+            (*nextGrid)[nIdx].lock.clear(std::memory_order_release);
+        }
+        
+        if(p.energy > 0) {
+            while((*nextGrid)[idx].lock.test_and_set(std::memory_order_acquire));
+            if ((*nextGrid)[idx].plants.size() < 2) {
+                (*nextGrid)[idx].plants.push_back(p);
+            }
+            (*nextGrid)[idx].lock.clear(std::memory_order_release);
+        } else {
+            while((*nextGrid)[idx].lock.test_and_set(std::memory_order_acquire));
+            (*nextGrid)[idx].fertility += p.genes.size * 0.2f; 
             (*nextGrid)[idx].lock.clear(std::memory_order_release);
         }
     }
