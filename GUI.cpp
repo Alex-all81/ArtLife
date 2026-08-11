@@ -137,7 +137,20 @@ void GUI::drawLegend() {
 
 void GUI::renderFileMenu() {
     ImGui::Begin("File & States");
+
     if (ImGui::Button(isPaused ? "Resume Sim" : "Pause Sim")) isPaused = !isPaused;
+    ImGui::SameLine();
+    if (ImGui::Button("Restart")) {
+        simulation.restart("config.json");
+        historyTicks.clear();
+        historyAnimals.clear();
+        historyHerbivores.clear();
+        historyOmnivores.clear();
+        historyCarnivores.clear();
+        historyPlants.clear();
+        forceStatsUpdate = true;
+    }
+
     ImGui::Separator();
     ImGui::Text("Load Snapshot (.bin)");
     ImGui::InputText("Path", loadPathBuffer, IM_ARRAYSIZE(loadPathBuffer));
@@ -145,6 +158,9 @@ void GUI::renderFileMenu() {
         if (simulation.loadSnapshot(loadPathBuffer)) {
             historyTicks.clear();
             historyAnimals.clear();
+            historyHerbivores.clear();
+            historyOmnivores.clear();
+            historyCarnivores.clear();
             historyPlants.clear();
             forceStatsUpdate = true;
         }
@@ -156,8 +172,8 @@ void GUI::renderGeneWindow() {
     ImGui::Begin("Gene Distribution", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
     int currentTick = simulation.getTick();
     
-    // Обновляем статистику каждый тик для плавности или принудительно (после добавления агентов)
-    if (currentTick != lastStatTick || forceStatsUpdate) {
+    // Снижаем частоту полного пересчета (11 сортировок массивов) до 1 раза в 5 тиков для плавности UI
+    if (currentTick - lastStatTick >= 5 || forceStatsUpdate) {
         geneStatsCache = simulation.getGeneStatistics();
         lastStatTick = currentTick;
         forceStatsUpdate = false;
@@ -184,51 +200,79 @@ void GUI::renderGeneWindow() {
 
 void GUI::renderImGui() {
     int currentTick = simulation.getTick();
-    int animalCount = 0, plantCount = 0;
+    int herbCount = 0, omniCount = 0, carnCount = 0, plantCount = 0, animalCount = 0;
     const auto& grid = simulation.getGrid();
-    
-    // Сборка текстуры с учетом режима затемнения (Highlighting)
-    for(size_t i = 0; i < grid.size(); ++i) {
+
+    auto getDietColor = [](float diet) -> uint32_t {
+        uint8_t r, g, b;
+        if (diet < 0.5f) {
+            float t = diet * 2.0f; 
+            r = static_cast<uint8_t>(t * 255.0f);
+            g = static_cast<uint8_t>(t * 255.0f);
+            b = static_cast<uint8_t>((1.0f - t) * 255.0f);
+        } else {
+            float t = (diet - 0.5f) * 2.0f; 
+            r = 255;
+            g = static_cast<uint8_t>((1.0f - t) * 255.0f);
+            b = 0;
+        }
+        return 0xFF000000 | (b << 16) | (g << 8) | r;
+    };
+
+    // --- НАЧАЛО ЦИКЛА ОБРАБОТКИ ПИКСЕЛЕЙ СЕТКИ ---
+    for (size_t i = 0; i < grid.size(); ++i) {
         bool hasAnimal = grid[i].animal.alive;
         bool hasPlant = !grid[i].plants.empty();
-        
-        if (hasAnimal) animalCount++;
+
+        if (hasAnimal) {
+            animalCount++;
+            float d = grid[i].animal.genes.dietBias;
+            if (d < 0.35f) herbCount++;
+            else if (d > 0.65f) carnCount++;
+            else omniCount++;
+        }
         if (hasPlant) plantCount += grid[i].plants.size();
-        
-        uint32_t color = 0xFF000000; 
+
+        uint32_t color = 0xFF000000;
         bool cellMatchesHighlight = false;
 
         if (currentViewMode >= VIEW_HEATMAP_ENERGY) {
             if (hasAnimal) {
                 float val = 0.0f;
                 const auto& g = grid[i].animal.genes;
-                switch(currentViewMode) {
-                    case VIEW_HEATMAP_ENERGY: val = grid[i].animal.energy / (g.size * 10.0f); break; 
-                    case VIEW_HEATMAP_DIET: val = g.dietBias; break;
+                switch (currentViewMode) {
+                    case VIEW_HEATMAP_ENERGY: val = grid[i].animal.energy / (g.size * 10.0f); break;
+                    case VIEW_HEATMAP_AGE: val = grid[i].animal.age / (250.0f + g.size * 20.0f); break;
+                    case VIEW_HEATMAP_DIET: val = g.dietBias; break; 
                     case VIEW_HEATMAP_SIZE: val = g.size / 10.0f; break;
                     case VIEW_HEATMAP_SPEED: val = g.speed; break;
                     case VIEW_HEATMAP_POWER: val = g.power / 2.0f; break;
+                    case VIEW_HEATMAP_THRESHOLD: val = (g.threshold - 0.3f) / 0.6f; break;
+                    case VIEW_HEATMAP_MUTABILITY: val = g.mutability / 0.5f; break;
+                    case VIEW_HEATMAP_IMPULSIVITY: val = g.impulsivity; break;
+                    case VIEW_HEATMAP_SIGHT: val = g.sight; break;
+                    case VIEW_HEATMAP_SMELL: val = g.smell; break;
                 }
-                color = getHeatmapColor(std::clamp(val, 0.0f, 1.0f));
-                
-                if (std::abs(val - highlightValue) <= highlightDeviation) {
-                    cellMatchesHighlight = true;
+
+                if (currentViewMode == VIEW_HEATMAP_DIET) {
+                    color = getDietColor(g.dietBias);
+                } else {
+                    color = getHeatmapColor(std::clamp(val, 0.0f, 1.0f));
                 }
+
+                if (std::abs(val - highlightValue) <= highlightDeviation) cellMatchesHighlight = true;
             }
         } else if (currentViewMode == VIEW_PLANT_DENSITY) {
             if (hasPlant) {
                 float val = std::min((float)grid[i].plants.size() / 2.0f, 1.0f);
-                color |= (static_cast<uint8_t>(val * 255.0f) << 8); 
+                color |= (static_cast<uint8_t>(val * 255.0f) << 8);
             }
         } else {
             bool drawAnimal = hasAnimal && (currentViewMode == VIEW_CLASSIC || currentViewMode == VIEW_ANIMALS_ONLY);
             bool drawPlant = hasPlant && (currentViewMode == VIEW_CLASSIC || currentViewMode == VIEW_PLANTS_ONLY);
 
             if (drawAnimal) {
-                float diet = grid[i].animal.genes.dietBias;
-                uint8_t r = static_cast<uint8_t>(diet * 255.0f);
-                uint8_t b = static_cast<uint8_t>((1.0f - diet) * 255.0f);
-                color |= (r | (b << 16)); 
+                color = getDietColor(grid[i].animal.genes.dietBias);
             } else if (drawPlant) {
                 color |= (255 << 8);
             } else {
@@ -239,27 +283,31 @@ void GUI::renderImGui() {
         }
 
         // Логика затемнения нерелевантных ячеек при зажатой шкале
-        if (isHighlighting && !cellMatchesHighlight) {
+        if (isHighlighting && !cellMatchesHighlight && hasAnimal && currentViewMode >= VIEW_HEATMAP_ENERGY) {
             uint8_t r = (color & 0x000000FF);
             uint8_t g = (color & 0x0000FF00) >> 8;
             uint8_t b = (color & 0x00FF0000) >> 16;
-            r = static_cast<uint8_t>(r * 0.3f);
-            g = static_cast<uint8_t>(g * 0.3f);
-            b = static_cast<uint8_t>(b * 0.3f);
-            color = 0xFF000000 | (b << 16) | (g << 8) | r;
+            color = 0xFF000000 | (static_cast<uint8_t>(b * 0.3f) << 16) | (static_cast<uint8_t>(g * 0.3f) << 8) | static_cast<uint8_t>(r * 0.3f);
         }
-
         pixelBuffer[i] = color;
     }
+    // --- КОНЕЦ ЦИКЛА ОБРАБОТКИ ПИКСЕЛЕЙ ---
 
+    // Обновление исторических данных графиков
     if (!isPaused && currentTick != lastRecordedTick) {
         lastRecordedTick = currentTick;
         historyTicks.push_back((float)currentTick);
         historyAnimals.push_back((float)animalCount);
+        historyHerbivores.push_back((float)herbCount);
+        historyOmnivores.push_back((float)omniCount);
+        historyCarnivores.push_back((float)carnCount);
         historyPlants.push_back((float)plantCount);
         if (historyTicks.size() > maxHistory) {
             historyTicks.erase(historyTicks.begin());
             historyAnimals.erase(historyAnimals.begin());
+            historyHerbivores.erase(historyHerbivores.begin());
+            historyOmnivores.erase(historyOmnivores.begin());
+            historyCarnivores.erase(historyCarnivores.begin());
             historyPlants.erase(historyPlants.begin());
         }
     }
@@ -268,39 +316,39 @@ void GUI::renderImGui() {
     ImGui::Begin("Simulation Control");
     ImGui::Text("Tick: %d", currentTick);
     ImGui::Text("Animals: %d | Plants: %d", animalCount, plantCount);
+    ImGui::Text("Herb: %d | Omni: %d | Carn: %d", herbCount, omniCount, carnCount);
     ImGui::Separator();
-    
+
     const char* viewModes[] = {
         "Classic (Both)", "Animals Only", "Plants Only", "Plant Density",
-        "Heatmap: Energy", "Heatmap: Diet", "Heatmap: Size", "Heatmap: Speed", "Heatmap: Power"
+        "Heatmap: Energy", "Heatmap: Age", "Heatmap: Diet", "Heatmap: Size", "Heatmap: Speed",
+        "Heatmap: Power", "Heatmap: Threshold", "Heatmap: Mutability", "Heatmap: Impulsivity",
+        "Heatmap: Sight", "Heatmap: Smell"
     };
     ImGui::Combo("View Mode", &currentViewMode, viewModes, IM_ARRAYSIZE(viewModes));
-    drawLegend(); 
+    drawLegend();
 
     ImGui::Separator();
     ImGui::Text("Population Intervention:");
     
     // Компактное размещение кнопок "Добавить" в один ряд
-    ImGui::PushItemWidth(80);
+    ImGui::PushItemWidth(100);
     ImGui::InputInt("##animals", &animalsToAdd);
     ImGui::PopItemWidth();
     ImGui::SameLine();
-    if (ImGui::Button("Add Animals")) {
-        simulation.addAnimals(std::max(1, animalsToAdd));
-        forceStatsUpdate = true; // Принудительное обновление статистики генов
-    }
+	ImGui::PushItemWidth(200);
+    if (ImGui::Button("Add Animals")) { simulation.addAnimals(std::max(1, animalsToAdd)); forceStatsUpdate = true; }
+    ImGui::SameLine();
+    if (ImGui::Button("Del Animals")) { simulation.removeAnimals(std::max(1, animalsToAdd)); forceStatsUpdate = true; }
 
-    ImGui::SameLine(0, 20); // Отступ между блоками
-
-    ImGui::PushItemWidth(80);
+    ImGui::PushItemWidth(100);
     ImGui::InputInt("##plants", &plantsToAdd);
     ImGui::PopItemWidth();
     ImGui::SameLine();
-    if (ImGui::Button("Add Plants")) {
-        simulation.addPlants(std::max(1, plantsToAdd));
-        forceStatsUpdate = true; // Принудительное обновление статистики генов
-
-    }
+	ImGui::PushItemWidth(200);
+    if (ImGui::Button("Add Plants")) { simulation.addPlants(std::max(1, plantsToAdd)); }
+    ImGui::SameLine();
+    if (ImGui::Button("Del Plants")) { simulation.removePlants(std::max(1, plantsToAdd)); }
 
     ImGui::Separator();
     ImGui::Text("Environment Settings:");
@@ -314,11 +362,12 @@ void GUI::renderImGui() {
 
     // --- World View (Карта) ---
     ImGui::Begin("World View");
+    
+    // ВАЖНО: Обновление текстуры видеокарты происходит строго ОДИН раз за кадр!
     glBindTexture(GL_TEXTURE_2D, gridTexture);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, simulation.getWidth(), simulation.getHeight(), 0, GL_RGBA, GL_UNSIGNED_BYTE, pixelBuffer.data());
     ImGui::Image((void*)(intptr_t)gridTexture, ImVec2(512, 512));
-        
-    // Реализация подробного инспектора ячейки при наведении курсора на карту
+    
     if (ImGui::IsItemHovered()) {
         ImVec2 mousePos = ImGui::GetMousePos();
         ImVec2 imgMin = ImGui::GetItemRectMin();
@@ -343,6 +392,7 @@ void GUI::renderImGui() {
             if (cell.animal.alive) {
                 ImGui::Separator();
                 ImGui::Text("Animal ID: %u", cell.animal.id);
+                ImGui::Text("Age: %d", cell.animal.age);
                 ImGui::Text("Energy: %.1f / %.1f", cell.animal.energy, cell.animal.genes.size * 10.0f);
                 ImGui::Text("Diet (0=Herb, 1=Carn): %.2f", cell.animal.genes.dietBias);
                 ImGui::Text("Size: %.2f | Speed: %.2f | Power: %.2f", cell.animal.genes.size, cell.animal.genes.speed, cell.animal.genes.power);
@@ -354,12 +404,14 @@ void GUI::renderImGui() {
 
     // --- Analytics ---
     ImGui::Begin("Analytics");
-    // Включение флагов AutoFit для автоматического масштабирования графика
     if (ImPlot::BeginPlot("Population Dynamics", ImVec2(-1, 300), ImPlotFlags_None)) {
         ImPlot::SetupAxes("Tick", "Population", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
         if (!historyTicks.empty()) {
-            ImPlot::PlotLine("Animals", historyTicks.data(), historyAnimals.data(), historyTicks.size());
+            ImPlot::PlotLine("Herbivores", historyTicks.data(), historyHerbivores.data(), historyTicks.size());
+            ImPlot::PlotLine("Omnivores(0.35-0.65)", historyTicks.data(), historyOmnivores.data(), historyTicks.size());
+            ImPlot::PlotLine("Carnivores", historyTicks.data(), historyCarnivores.data(), historyTicks.size());
             ImPlot::PlotLine("Plants", historyTicks.data(), historyPlants.data(), historyTicks.size());
+            ImPlot::PlotLine("Animals", historyTicks.data(), historyAnimals.data(), historyTicks.size());
         }
         ImPlot::EndPlot();
     }

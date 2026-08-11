@@ -37,7 +37,9 @@ public:
     
     void addAnimals(int count);
     void addPlants(int count);
-    
+    void restart(const std::string& configFile);
+    void removeAnimals(int count);
+    void removePlants(int count);
     // Сериализация
     void saveSnapshot(const std::string& filepath);
     bool loadSnapshot(const std::string& filepath);

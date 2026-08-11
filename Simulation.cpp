@@ -143,13 +143,13 @@ void Simulation::processCell(int x, int y, std::mt19937& rng) {
         a.age++; // Животное стареет
         
         // Динамический максимальный возраст (крупные живут чуть дольше)
-        int maxAge = maxAge + static_cast<int>(a.genes.size * 20);
+        int maxAgeFact = maxAge + static_cast<int>(a.genes.size * 20);
         
         // Базовый расход энергии на жизнь
         a.energy -= (a.genes.size * 0.05f + (a.genes.sight + a.genes.smell) * 0.2f + 0.3f);
         
         // Проверка: животное живо, если есть энергия И не наступила старость
-        if(a.energy > 0 && a.age < maxAge) {
+        if(a.energy > 0 && a.age < maxAgeFact) {
             
             // --- Питание ---
             if (a.genes.dietBias < 0.5f) { 
@@ -169,12 +169,12 @@ void Simulation::processCell(int x, int y, std::mt19937& rng) {
             a.energy = std::min(a.energy, maxEnergy);
             
             // Размножение и Мутации
-            if (a.energy > maxEnergy * a.genes.threshold) {
-                a.energy -= maxEnergy * 0.4f;
+            if (a.energy > maxEnergy * a.genes.threshold) {               
                 Animal child = a;
                 child.id = rng();
                 child.age = 0; // Потомок рождается с нулевым возрастом
-                child.energy = maxEnergy * 0.4f;
+                child.energy = a.energy * 0.5;
+                a.energy -= child.energy;
                 
                 // Функция-помощник для мутации отдельного гена
                 auto mutate_gene = [&](float& gene, float min_v, float max_v) {
@@ -185,8 +185,10 @@ void Simulation::processCell(int x, int y, std::mt19937& rng) {
                     } else {
                         float r2 = (float)(rng() % 1000) / 1000.0f;
                         if (r2 < child.genes.mutability) {
+                            auto const diapazon = max_v - min_v;
+                            auto const base_step = mutation_step * diapazon;
                             // Сдвиг по Гауссу (аппроксимация случайным блужданием)
-                            float step = ((float)(rng() % 1000) / 1000.0f - 0.5f) * 2.0f * mutation_step;
+                            float step = ((float)(rng() % 1000) / 1000.0f - 0.5f) * 2.0f * base_step;
                             gene = std::clamp(gene + step, min_v, max_v);
                         }
                     }
@@ -371,26 +373,92 @@ bool Simulation::loadSnapshot(const std::string& filepath) {
 }
 
 std::map<std::string, GeneStats> Simulation::getGeneStatistics() const {
-    std::vector<float> diet, size, speed, power;
+    std::vector<float> diet, size, speed, power, threshold, mutab, impuls, sight, smell, energy, age;
     for (const auto& cell : *currentGrid) {
         if (cell.animal.alive) {
-            diet.push_back(cell.animal.genes.dietBias);
-            size.push_back(cell.animal.genes.size);
-            speed.push_back(cell.animal.genes.speed);
-            power.push_back(cell.animal.genes.power);
+            const auto& g = cell.animal.genes;
+            diet.push_back(g.dietBias);
+            size.push_back(g.size);
+            speed.push_back(g.speed);
+            power.push_back(g.power);
+            threshold.push_back(g.threshold);
+            mutab.push_back(g.mutability);
+            impuls.push_back(g.impulsivity);
+            sight.push_back(g.sight);
+            smell.push_back(g.smell);
+            energy.push_back(cell.animal.energy);
+            age.push_back(static_cast<float>(cell.animal.age));
         }
     }
-    
+
     auto calc = [](std::vector<float>& vec) -> GeneStats {
-        if (vec.empty()) return {0, 0, 0};
+        if (vec.empty()) return { 0, 0, 0 };
         std::sort(vec.begin(), vec.end());
         return { vec.front(), vec.back(), vec[vec.size() / 2] };
-    };
-    
+        };
+
     return {
-        {"Diet (0=Herb, 1=Carn)", calc(diet)},
-        {"Size", calc(size)},
-        {"Speed", calc(speed)},
-        {"Power", calc(power)}
+        {"1. Diet (0=H, 1=C)", calc(diet)}, {"2. Size", calc(size)},
+        {"3. Speed", calc(speed)},          {"4. Power", calc(power)},
+        {"5. Threshold", calc(threshold)},  {"6. Mutability", calc(mutab)},
+        {"7. Impulsivity", calc(impuls)},   {"8. Sight", calc(sight)},
+        {"9. Smell", calc(smell)},          {"~ Energy", calc(energy)},
+        {"~ Age", calc(age)}
     };
+}
+
+void Simulation::restart(const std::string& configFile) {
+    std::ifstream f(configFile);
+    nlohmann::json config;
+    if (f.is_open()) config = nlohmann::json::parse(f);
+
+    sunlight_base = config.value("sunlight_base", 1.5f);
+    fertility_decay = config.value("fertility_decay", 0.001f);
+    mutation_step = config.value("mutation_step", 0.1f);
+    replace_factor = config.value("replace_factor", 0.1f);
+    initial_herbivore_ratio = config.value("initial_herbivore_ratio", 0.5f);
+
+    int numAnimals = config.value("initial_animals", 1000);
+    int numPlants = config.value("initial_plants", 5000);
+
+    tick = 0;
+    std::fill(currentGrid->begin(), currentGrid->end(), Cell());
+    std::fill(nextGrid->begin(), nextGrid->end(), Cell());
+
+    // Новый ID сессии для автосохранений
+    auto now = std::chrono::system_clock::now();
+    auto in_time_t = std::chrono::system_clock::to_time_t(now);
+    std::stringstream ss;
+    ss << std::put_time(std::localtime(&in_time_t), "%Y%m%d_%H%M%S");
+    session_id = ss.str() + "_restarted";
+    std::filesystem::create_directories(records_dir + "/" + session_id);
+
+    addPlants(numPlants);
+    addAnimals(numAnimals);
+}
+
+void Simulation::removeAnimals(int count) {
+    std::mt19937 rng(std::random_device{}());
+    std::vector<int> alive_indices;
+    for (size_t i = 0; i < currentGrid->size(); ++i) {
+        if ((*currentGrid)[i].animal.alive) alive_indices.push_back(i);
+    }
+    std::shuffle(alive_indices.begin(), alive_indices.end(), rng);
+    int to_remove = std::min(count, (int)alive_indices.size());
+    for (int i = 0; i < to_remove; ++i) (*currentGrid)[alive_indices[i]].animal.alive = false;
+}
+
+void Simulation::removePlants(int count) {
+    std::mt19937 rng(std::random_device{}());
+    std::vector<int> plant_indices;
+    for (size_t i = 0; i < currentGrid->size(); ++i) {
+        for (size_t p = 0; p < (*currentGrid)[i].plants.size(); ++p) plant_indices.push_back(i);
+    }
+    std::shuffle(plant_indices.begin(), plant_indices.end(), rng);
+    int to_remove = std::min(count, (int)plant_indices.size());
+    for (int i = 0; i < to_remove; ++i) {
+        if (!(*currentGrid)[plant_indices[i]].plants.empty()) {
+            (*currentGrid)[plant_indices[i]].plants.pop_back();
+        }
+    }
 }
