@@ -37,7 +37,9 @@ The project is under active development. Future updates are categorized into fou
 - [ ] **Custom Worlds:** Transition the simulator into a flexible engine where end-users can design custom worlds, define their own physics, and introduce entirely new gene sets using simple JSON configurations.
 - [ ] **Developer-Friendly:** Maintain clean, modular code to ensure that developers can easily fork, extend, and mod the simulator.
 
-
+---
+<img width="2735" height="1583" alt="demo-2" src="https://github.com/user-attachments/assets/cd1e2302-52ad-4559-a901-157897454492" />
+<img width="2743" height="1581" alt="demo-1" src="https://github.com/user-attachments/assets/e4b811fd-67f7-44b7-ac62-2e122913c36f" />
 ---
 
 ## 🛠️ Dependencies
