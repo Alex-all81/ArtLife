@@ -14,6 +14,7 @@ GUI::GUI(Simulation& sim) : simulation(sim) {
     
     window = SDL_CreateWindow("ALife Sim v2.0", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1400, 800, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
     gl_context = SDL_GL_CreateContext(window);
+	SDL_GL_SetSwapInterval(1); // 1 = включить VSync (ограничение кадров), 0 = снять лимит
     glewInit();
     
     IMGUI_CHECKVERSION();
@@ -318,6 +319,12 @@ void GUI::renderImGui() {
     // --- Control Panel ---
     ImGui::Begin("Simulation Control");
     ImGui::Text("Tick: %d", currentTick);
+	// --- Вывод FPS и управление лимитом кадров ---
+    float currentFps = ImGui::GetIO().Framerate;
+    ImGui::Text("FPS: %.1f (%.2f ms/frame)", currentFps, 1000.0f / currentFps);
+    if (ImGui::Checkbox("VSync (Limit FPS)", &vsyncEnabled)) {
+        SDL_GL_SetSwapInterval(vsyncEnabled ? 1 : 0);
+    }
     ImGui::Text("Animals: %d | Plants: %d", animalCount, plantCount);
     ImGui::Text("Herb: %d | Omni: %d | Carn: %d", herbCount, omniCount, carnCount);
     ImGui::Separator();

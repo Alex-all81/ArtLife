@@ -51,6 +51,7 @@ private:
     int plantsToAdd = 5000;
     
     bool isPaused = false;
+	bool vsyncEnabled = true;
     char loadPathBuffer[256] = "";
 
     // --- Переменные для интерактивной подсветки тепловых карт ---
