@@ -72,16 +72,18 @@ uint32_t GUI::getHeatmapColor(float value) {
     if (value < 0.5f) {
         b = static_cast<uint8_t>((1.0f - value * 2.0f) * 255.0f);
         g = static_cast<uint8_t>(value * 2.0f * 255.0f);
+        r = static_cast<uint8_t>((value) * 2.0f * 255.0f);
     } else {
         g = static_cast<uint8_t>((1.0f - (value - 0.5f) * 2.0f) * 255.0f);
-        r = static_cast<uint8_t>((value - 0.5f) * 2.0f * 255.0f);
+        r = 255; 
     }
     return 0xFF000000 | (b << 16) | (g << 8) | r;
 }
 
 void GUI::drawLegend() {
-    ImGui::Text("Legend:");
-    if (currentViewMode == VIEW_CLASSIC || currentViewMode == VIEW_ANIMALS_ONLY) {
+    ImGui::Text("Legend:");    
+    if(currentViewMode < VIEW_HEATMAP_ENERGY)
+    {
         ImGui::BulletText("Blue: Herbivore | Yellow: Omnivore | Red: Carnivore");
         ImGui::BulletText("Green: Plants | Gray: Fertility");
     } else if (currentViewMode >= VIEW_HEATMAP_ENERGY) {
@@ -89,19 +91,19 @@ void GUI::drawLegend() {
         ImGui::SameLine();
         
         ImVec2 p = ImGui::GetCursorScreenPos();
-        float width = 200.0f;
+        float width = 300.0f;
         float height = 15.0f;
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
         
         // Корректный градиент: Синий -> Зеленый
         draw_list->AddRectFilledMultiColor(p, ImVec2(p.x + width/2, p.y + height),
-            IM_COL32(0, 0, 255, 255), IM_COL32(0, 255, 0, 255), 
-            IM_COL32(0, 255, 0, 255), IM_COL32(0, 0, 255, 255));
+            IM_COL32(0, 0, 255, 255), IM_COL32(255, 255, 0, 255),
+            IM_COL32(255, 255, 0, 255), IM_COL32(0, 0, 255, 255));
         
         // Корректный градиент: Зеленый -> Красный
         draw_list->AddRectFilledMultiColor(ImVec2(p.x + width/2, p.y), ImVec2(p.x + width, p.y + height),
-            IM_COL32(0, 255, 0, 255), IM_COL32(255, 0, 0, 255), 
-            IM_COL32(255, 0, 0, 255), IM_COL32(0, 255, 0, 255));
+            IM_COL32(255, 255, 0, 255), IM_COL32(255, 0, 0, 255),
+            IM_COL32(255, 0, 0, 255), IM_COL32(255, 255, 0, 255));
             
         ImGui::InvisibleButton("heatmap_legend", ImVec2(width, height));
         
@@ -242,7 +244,8 @@ void GUI::renderImGui() {
                 const auto& g = grid[i].animal.genes;
                 switch (currentViewMode) {
                     case VIEW_HEATMAP_ENERGY: val = grid[i].animal.energy / (g.size * 10.0f); break;
-                    case VIEW_HEATMAP_AGE: val = grid[i].animal.age / (250.0f + g.size * 20.0f); break;
+                    case VIEW_HEATMAP_FERTILITY: val = grid[i].fertility / 255; break;
+                    case VIEW_HEATMAP_AGE: val = grid[i].animal.age / (simulation.maxAge + g.size * 20.0f); break;
                     case VIEW_HEATMAP_DIET: val = g.dietBias; break; 
                     case VIEW_HEATMAP_SIZE: val = g.size / 10.0f; break;
                     case VIEW_HEATMAP_SPEED: val = g.speed; break;
@@ -321,7 +324,7 @@ void GUI::renderImGui() {
 
     const char* viewModes[] = {
         "Classic (Both)", "Animals Only", "Plants Only", "Plant Density",
-        "Heatmap: Energy", "Heatmap: Age", "Heatmap: Diet", "Heatmap: Size", "Heatmap: Speed",
+        "Heatmap: Energy",  "Heatmap: Fertility",  "Heatmap: Age", "Heatmap: Diet", "Heatmap: Size", "Heatmap: Speed",
         "Heatmap: Power", "Heatmap: Threshold", "Heatmap: Mutability", "Heatmap: Impulsivity",
         "Heatmap: Sight", "Heatmap: Smell"
     };
@@ -341,6 +344,7 @@ void GUI::renderImGui() {
     ImGui::SameLine();
     if (ImGui::Button("Del Animals")) { simulation.removeAnimals(std::max(1, animalsToAdd)); forceStatsUpdate = true; }
 
+    ImGui::SameLine();
     ImGui::PushItemWidth(100);
     ImGui::InputInt("##plants", &plantsToAdd);
     ImGui::PopItemWidth();
