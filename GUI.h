@@ -18,7 +18,7 @@ private:
     SDL_Window* window;
     SDL_GLContext gl_context;
     
-    void renderImGui(bool drawWorld);
+    void renderImGui();
     uint32_t getHeatmapColor(float value); 
     void drawLegend(); 
     void renderGeneWindow(); 

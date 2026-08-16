@@ -43,8 +43,6 @@ GUI::~GUI() {
 
 void GUI::run() {
     bool running = true;
-	auto step = 0;
-	auto drawWorld = true;
     while (running) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -65,16 +63,12 @@ void GUI::run() {
         } else {
             //lastTickTimeMs = 0.0; // На паузе ядро не считается
         }
-		if(step++ % 5 != 0)
-			drawWorld = false;
-		else 
-			drawWorld = true;
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
-        renderImGui(drawWorld);
+        renderImGui();
         renderGeneWindow();
         renderFileMenu();
 
@@ -220,7 +214,7 @@ void GUI::renderGeneWindow() {
     ImGui::End();
 }
 
-void GUI::renderImGui(bool drawWorld) {
+void GUI::renderImGui() {
     int currentTick = simulation.getTick();
     int herbCount = 0, omniCount = 0, carnCount = 0, plantCount = 0, animalCount = 0;
     const auto& grid = simulation.getGrid();
@@ -241,83 +235,80 @@ void GUI::renderImGui(bool drawWorld) {
         return 0xFF000000 | (b << 16) | (g << 8) | r;
     };
 
-    if(drawWorld)
-	{
-		// --- НАЧАЛО ЦИКЛА ОБРАБОТКИ ПИКСЕЛЕЙ СЕТКИ ---
-		for (size_t i = 0; i < grid.size(); ++i) {
-			bool hasAnimal = grid[i].animal.alive;
-			bool hasPlant = !grid[i].plants.empty();
+    // --- НАЧАЛО ЦИКЛА ОБРАБОТКИ ПИКСЕЛЕЙ СЕТКИ ---
+    for (size_t i = 0; i < grid.size(); ++i) {
+        bool hasAnimal = grid[i].animal.alive;
+        bool hasPlant = !grid[i].plants.empty();
 
-			if (hasAnimal) {
-				animalCount++;
-				float d = grid[i].animal.genes.dietBias;
-				if (d < 0.35f) herbCount++;
-				else if (d > 0.65f) carnCount++;
-				else omniCount++;
-			}
-			if (hasPlant) plantCount += grid[i].plants.size();
+        if (hasAnimal) {
+            animalCount++;
+            float d = grid[i].animal.genes.dietBias;
+            if (d < 0.35f) herbCount++;
+            else if (d > 0.65f) carnCount++;
+            else omniCount++;
+        }
+        if (hasPlant) plantCount += grid[i].plants.size();
 
-			uint32_t color = 0xFF000000;
-			bool cellMatchesHighlight = false;
+        uint32_t color = 0xFF000000;
+        bool cellMatchesHighlight = false;
 
-			if (currentViewMode >= VIEW_HEATMAP_ENERGY) {
-				if (hasAnimal) {
-					float val = 0.0f;
-					const auto& g = grid[i].animal.genes;
-					switch (currentViewMode) {
-						case VIEW_HEATMAP_ENERGY: val = grid[i].animal.energy / (g.size * 10.0f); break;
-						case VIEW_HEATMAP_FERTILITY: val = grid[i].fertility / 255; break;
-						case VIEW_HEATMAP_AGE: val = grid[i].animal.age / (simulation.maxAge + g.size * 20.0f); break;
-						case VIEW_HEATMAP_DIET: val = g.dietBias; break; 
-						case VIEW_HEATMAP_SIZE: val = g.size / 10.0f; break;
-						case VIEW_HEATMAP_SPEED: val = g.speed; break;
-						case VIEW_HEATMAP_POWER: val = g.power / 2.0f; break;
-						case VIEW_HEATMAP_THRESHOLD: val = (g.threshold - 0.3f) / 0.6f; break;
-						case VIEW_HEATMAP_MUTABILITY: val = g.mutability / 0.5f; break;
-						case VIEW_HEATMAP_IMPULSIVITY: val = g.impulsivity; break;
-						case VIEW_HEATMAP_SIGHT: val = g.sight; break;
-						case VIEW_HEATMAP_SMELL: val = g.smell; break;
-					}
+        if (currentViewMode >= VIEW_HEATMAP_ENERGY) {
+            if (hasAnimal) {
+                float val = 0.0f;
+                const auto& g = grid[i].animal.genes;
+                switch (currentViewMode) {
+                    case VIEW_HEATMAP_ENERGY: val = grid[i].animal.energy / (g.size * 10.0f); break;
+                    case VIEW_HEATMAP_FERTILITY: val = grid[i].fertility / 255; break;
+                    case VIEW_HEATMAP_AGE: val = grid[i].animal.age / (simulation.maxAge + g.size * 20.0f); break;
+                    case VIEW_HEATMAP_DIET: val = g.dietBias; break; 
+                    case VIEW_HEATMAP_SIZE: val = g.size / 10.0f; break;
+                    case VIEW_HEATMAP_SPEED: val = g.speed; break;
+                    case VIEW_HEATMAP_POWER: val = g.power / 2.0f; break;
+                    case VIEW_HEATMAP_THRESHOLD: val = (g.threshold - 0.3f) / 0.6f; break;
+                    case VIEW_HEATMAP_MUTABILITY: val = g.mutability / 0.5f; break;
+                    case VIEW_HEATMAP_IMPULSIVITY: val = g.impulsivity; break;
+                    case VIEW_HEATMAP_SIGHT: val = g.sight; break;
+                    case VIEW_HEATMAP_SMELL: val = g.smell; break;
+                }
 
-					if (currentViewMode == VIEW_HEATMAP_DIET) {
-						color = getDietColor(g.dietBias);
-					} else {
-						color = getHeatmapColor(std::clamp(val, 0.0f, 1.0f));
-					}
+                if (currentViewMode == VIEW_HEATMAP_DIET) {
+                    color = getDietColor(g.dietBias);
+                } else {
+                    color = getHeatmapColor(std::clamp(val, 0.0f, 1.0f));
+                }
 
-					if (std::abs(val - highlightValue) <= highlightDeviation) cellMatchesHighlight = true;
-				}
-			} else if (currentViewMode == VIEW_PLANT_DENSITY) {
-				if (hasPlant) {
-					float val = std::min((float)grid[i].plants.size() / 2.0f, 1.0f);
-					color |= (static_cast<uint8_t>(val * 255.0f) << 8);
-				}
-			} else {
-				bool drawAnimal = hasAnimal && (currentViewMode == VIEW_CLASSIC || currentViewMode == VIEW_ANIMALS_ONLY);
-				bool drawPlant = hasPlant && (currentViewMode == VIEW_CLASSIC || currentViewMode == VIEW_PLANTS_ONLY);
+                if (std::abs(val - highlightValue) <= highlightDeviation) cellMatchesHighlight = true;
+            }
+        } else if (currentViewMode == VIEW_PLANT_DENSITY) {
+            if (hasPlant) {
+                float val = std::min((float)grid[i].plants.size() / 2.0f, 1.0f);
+                color |= (static_cast<uint8_t>(val * 255.0f) << 8);
+            }
+        } else {
+            bool drawAnimal = hasAnimal && (currentViewMode == VIEW_CLASSIC || currentViewMode == VIEW_ANIMALS_ONLY);
+            bool drawPlant = hasPlant && (currentViewMode == VIEW_CLASSIC || currentViewMode == VIEW_PLANTS_ONLY);
 
-				if (drawAnimal) {
-					color = getDietColor(grid[i].animal.genes.dietBias);
-				} else if (drawPlant) {
-					color |= (255 << 8);
-				} else {
-					int fertility_val = static_cast<int>(grid[i].fertility * 50.0f);
-					uint8_t f = static_cast<uint8_t>(std::min(255, fertility_val));
-					color |= (f << 8) | f;
-				}
-			}
+            if (drawAnimal) {
+                color = getDietColor(grid[i].animal.genes.dietBias);
+            } else if (drawPlant) {
+                color |= (255 << 8);
+            } else {
+                int fertility_val = static_cast<int>(grid[i].fertility * 50.0f);
+                uint8_t f = static_cast<uint8_t>(std::min(255, fertility_val));
+                color |= (f << 8) | f;
+            }
+        }
 
-			// Логика затемнения нерелевантных ячеек при зажатой шкале
-			if (isHighlighting && !cellMatchesHighlight && hasAnimal && currentViewMode >= VIEW_HEATMAP_ENERGY) {
-				uint8_t r = (color & 0x000000FF);
-				uint8_t g = (color & 0x0000FF00) >> 8;
-				uint8_t b = (color & 0x00FF0000) >> 16;
-				color = 0xFF000000 | (static_cast<uint8_t>(b * 0.3f) << 16) | (static_cast<uint8_t>(g * 0.3f) << 8) | static_cast<uint8_t>(r * 0.3f);
-			}
-			pixelBuffer[i] = color;
-		}
-		// --- КОНЕЦ ЦИКЛА ОБРАБОТКИ ПИКСЕЛЕЙ ---
-	}
+        // Логика затемнения нерелевантных ячеек при зажатой шкале
+        if (isHighlighting && !cellMatchesHighlight && hasAnimal && currentViewMode >= VIEW_HEATMAP_ENERGY) {
+            uint8_t r = (color & 0x000000FF);
+            uint8_t g = (color & 0x0000FF00) >> 8;
+            uint8_t b = (color & 0x00FF0000) >> 16;
+            color = 0xFF000000 | (static_cast<uint8_t>(b * 0.3f) << 16) | (static_cast<uint8_t>(g * 0.3f) << 8) | static_cast<uint8_t>(r * 0.3f);
+        }
+        pixelBuffer[i] = color;
+    }
+    // --- КОНЕЦ ЦИКЛА ОБРАБОТКИ ПИКСЕЛЕЙ ---
 
     // Обновление исторических данных графиков
     if (!isPaused && currentTick != lastRecordedTick) {
@@ -394,50 +385,47 @@ void GUI::renderImGui(bool drawWorld) {
     ImGui::SliderFloat("Random Replace Factor", &simulation.replace_factor, 0.0f, 1.0f, "%.2f");
     ImGui::End();
 
-	if(1)
-    {
-		// --- World View (Карта) ---
-		ImGui::Begin("World View");
-		
-		// ВАЖНО: Обновление текстуры видеокарты происходит строго ОДИН раз за кадр!
-		glBindTexture(GL_TEXTURE_2D, gridTexture);
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, simulation.getWidth(), simulation.getHeight(), 0, GL_RGBA, GL_UNSIGNED_BYTE, pixelBuffer.data());
-		ImGui::Image((void*)(intptr_t)gridTexture, ImVec2(512, 512));
-		
-		if (ImGui::IsItemHovered()) {
-			ImVec2 mousePos = ImGui::GetMousePos();
-			ImVec2 imgMin = ImGui::GetItemRectMin();
-			ImVec2 imgSize = ImGui::GetItemRectSize();
-			
-			int x = static_cast<int>((mousePos.x - imgMin.x) / imgSize.x * simulation.getWidth());
-			int y = static_cast<int>((mousePos.y - imgMin.y) / imgSize.y * simulation.getHeight());
-			
-			if (x >= 0 && x < simulation.getWidth() && y >= 0 && y < simulation.getHeight()) {
-				const Cell& cell = simulation.getGrid()[y * simulation.getWidth() + x];
-				
-				ImGui::BeginTooltip();
-				ImGui::Text("Cell: [%d, %d]", x, y);
-				ImGui::Separator();
-				ImGui::Text("Fertility: %.3f", cell.fertility);
-				ImGui::Text("Carrion: %.2f", cell.carrion);
-				ImGui::Text("Plants: %zu", cell.plants.size());
-				if (!cell.plants.empty()) {
-					ImGui::Text(" - First Plant Eng: %.1f", cell.plants[0].energy);
-				}
-				
-				if (cell.animal.alive) {
-					ImGui::Separator();
-					ImGui::Text("Animal ID: %u", cell.animal.id);
-					ImGui::Text("Age: %d", cell.animal.age);
-					ImGui::Text("Energy: %.1f / %.1f", cell.animal.energy, cell.animal.genes.size * 10.0f);
-					ImGui::Text("Diet (0=Herb, 1=Carn): %.2f", cell.animal.genes.dietBias);
-					ImGui::Text("Size: %.2f | Speed: %.2f | Power: %.2f", cell.animal.genes.size, cell.animal.genes.speed, cell.animal.genes.power);
-				}
-				ImGui::EndTooltip();
-			}
-		}
-		ImGui::End();
-	}
+    // --- World View (Карта) ---
+    ImGui::Begin("World View");
+    
+    // ВАЖНО: Обновление текстуры видеокарты происходит строго ОДИН раз за кадр!
+    glBindTexture(GL_TEXTURE_2D, gridTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, simulation.getWidth(), simulation.getHeight(), 0, GL_RGBA, GL_UNSIGNED_BYTE, pixelBuffer.data());
+    ImGui::Image((void*)(intptr_t)gridTexture, ImVec2(512, 512));
+    
+    if (ImGui::IsItemHovered()) {
+        ImVec2 mousePos = ImGui::GetMousePos();
+        ImVec2 imgMin = ImGui::GetItemRectMin();
+        ImVec2 imgSize = ImGui::GetItemRectSize();
+        
+        int x = static_cast<int>((mousePos.x - imgMin.x) / imgSize.x * simulation.getWidth());
+        int y = static_cast<int>((mousePos.y - imgMin.y) / imgSize.y * simulation.getHeight());
+        
+        if (x >= 0 && x < simulation.getWidth() && y >= 0 && y < simulation.getHeight()) {
+            const Cell& cell = simulation.getGrid()[y * simulation.getWidth() + x];
+            
+            ImGui::BeginTooltip();
+            ImGui::Text("Cell: [%d, %d]", x, y);
+            ImGui::Separator();
+            ImGui::Text("Fertility: %.3f", cell.fertility);
+            ImGui::Text("Carrion: %.2f", cell.carrion);
+            ImGui::Text("Plants: %zu", cell.plants.size());
+            if (!cell.plants.empty()) {
+                ImGui::Text(" - First Plant Eng: %.1f", cell.plants[0].energy);
+            }
+            
+            if (cell.animal.alive) {
+                ImGui::Separator();
+                ImGui::Text("Animal ID: %u", cell.animal.id);
+                ImGui::Text("Age: %d", cell.animal.age);
+                ImGui::Text("Energy: %.1f / %.1f", cell.animal.energy, cell.animal.genes.size * 10.0f);
+                ImGui::Text("Diet (0=Herb, 1=Carn): %.2f", cell.animal.genes.dietBias);
+                ImGui::Text("Size: %.2f | Speed: %.2f | Power: %.2f", cell.animal.genes.size, cell.animal.genes.speed, cell.animal.genes.power);
+            }
+            ImGui::EndTooltip();
+        }
+    }
+    ImGui::End();
 
     // --- Analytics ---
     ImGui::Begin("Analytics");
