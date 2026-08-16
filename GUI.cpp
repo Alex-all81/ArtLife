@@ -514,6 +514,18 @@ void GUI::renderImGui() {
     }
 
     if (!isPaused && currentTick != lastRecordedTick) {
+		// workaround for fix ghost tick value (last tick before restart/load can write to data after data clear)
+        if (lastRecordedTick != -1 && (currentTick < lastRecordedTick || currentTick - lastRecordedTick > 1000)) {
+            historyTicks.clear();
+            historyAnimals.clear();
+            historyHerbivores.clear();
+            historyOmnivores.clear();
+            historyCarnivores.clear();
+            historyPlants.clear();
+            geneHistoryCache.clear();
+            lastStatTick = -1;
+        }
+        
         lastRecordedTick = currentTick;
         historyTicks.push_back((float)currentTick, maxHistory);
         historyAnimals.push_back((float)animalCount, maxHistory);
