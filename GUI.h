@@ -52,6 +52,7 @@ private:
     
     bool isPaused = false;
 	bool vsyncEnabled = true;
+	double lastTickTimeMs = 0.0;
     char loadPathBuffer[256] = "";
 
     // --- Переменные для интерактивной подсветки тепловых карт ---

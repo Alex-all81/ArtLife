@@ -6,6 +6,7 @@
 #include <implot.h>
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 
 GUI::GUI(Simulation& sim) : simulation(sim) {
     SDL_Init(SDL_INIT_VIDEO);
@@ -49,7 +50,19 @@ void GUI::run() {
             if (event.type == SDL_QUIT) running = false;
         }
 
-        if (!isPaused) simulation.update();
+        if (!isPaused) {
+            // Засекаем точное время старта
+            auto start_time = std::chrono::high_resolution_clock::now();
+            
+            simulation.update();
+            
+            // Вычисляем разницу в миллисекундах
+            auto end_time = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> ms_double = end_time - start_time;
+            lastTickTimeMs = ms_double.count();
+        } else {
+            //lastTickTimeMs = 0.0; // На паузе ядро не считается
+        }
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
@@ -321,7 +334,8 @@ void GUI::renderImGui() {
     ImGui::Text("Tick: %d", currentTick);
 	// --- Вывод FPS и управление лимитом кадров ---
     float currentFps = ImGui::GetIO().Framerate;
-    ImGui::Text("FPS: %.1f (%.2f ms/frame)", currentFps, 1000.0f / currentFps);
+    ImGui::Text("GUI FPS: %.1f (%.2f ms/frame)", currentFps, currentFps > 0.0 ? 1000.0f / currentFps : 0.0);
+	ImGui::Text("Core FPS: %.1f (%.3f ms/tick)", lastTickTimeMs > 0.0 ? 1000.0f / lastTickTimeMs : 0.0, lastTickTimeMs);
     if (ImGui::Checkbox("VSync (Limit FPS)", &vsyncEnabled)) {
         SDL_GL_SetSwapInterval(vsyncEnabled ? 1 : 0);
     }
