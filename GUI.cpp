@@ -15,7 +15,7 @@ GUI::GUI(Simulation& sim) : simulation(sim) {
     
     window = SDL_CreateWindow("ALife Sim v2.0", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1400, 800, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
     gl_context = SDL_GL_CreateContext(window);
-	SDL_GL_SetSwapInterval(1); // 1 = включить VSync (ограничение кадров), 0 = снять лимит
+    SDL_GL_SetSwapInterval(1); // 1 = включить VSync (ограничение кадров), 0 = снять лимит
     glewInit();
     
     IMGUI_CHECKVERSION();
@@ -29,9 +29,27 @@ GUI::GUI(Simulation& sim) : simulation(sim) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     pixelBuffer.resize(sim.getWidth() * sim.getHeight());
+
+    // Инициализация локальных UI-переменных
+    ui_sunlight = sim.sunlight_base;
+    ui_fertility = sim.fertility_decay;
+    ui_mutation = sim.mutation_step;
+    ui_replace = sim.replace_factor;
+
+    // Инициализация стартового снимка для рендера
+    snapGrid = simulation.getGrid();
+    
+    // Запуск фонового потока расчетов
+    simRunning = true;
+    simThread = std::thread(&GUI::simLoop, this);
 }
 
 GUI::~GUI() {
+    simRunning = false;
+    if (simThread.joinable()) {
+        simThread.join();
+    }
+
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImPlot::DestroyContext();
@@ -41,6 +59,45 @@ GUI::~GUI() {
     SDL_Quit();
 }
 
+// --- ФОНОВЫЙ ПОТОК РАСЧЕТОВ ЯДРА ---
+void GUI::simLoop() {
+    while (simRunning) {
+        if (!isPaused) {
+            auto start_time = std::chrono::high_resolution_clock::now();
+            
+            {
+                std::lock_guard<std::mutex> lock(simMutex);
+                simulation.update();
+                
+                // Делаем мгновенную копию сетки, если UI попросил
+                if (snapshotRequested) {
+                    std::lock_guard<std::mutex> snap_lock(snapMutex);
+                    snapGrid = simulation.getGrid();
+                    snapTick = simulation.getTick();
+                    snapshotRequested = false;
+                }
+            } // Мьютекс ядра освобожден
+
+            auto end_time = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> ms_double = end_time - start_time;
+            lastTickTimeMs = ms_double.count(); 
+            
+            // КРИТИЧЕСКИ ВАЖНО: Даем ОС возможность передать мьютекс потоку интерфейса (кнопки, слайдеры)
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            if (snapshotRequested) {
+                std::lock_guard<std::mutex> lock(simMutex);
+                std::lock_guard<std::mutex> snap_lock(snapMutex);
+                snapGrid = simulation.getGrid();
+                snapTick = simulation.getTick();
+                snapshotRequested = false;
+            }
+        }
+    }
+}
+
 void GUI::run() {
     bool running = true;
     while (running) {
@@ -48,20 +105,6 @@ void GUI::run() {
         while (SDL_PollEvent(&event)) {
             ImGui_ImplSDL2_ProcessEvent(&event);
             if (event.type == SDL_QUIT) running = false;
-        }
-
-        if (!isPaused) {
-            // Засекаем точное время старта
-            auto start_time = std::chrono::high_resolution_clock::now();
-            
-            simulation.update();
-            
-            // Вычисляем разницу в миллисекундах
-            auto end_time = std::chrono::high_resolution_clock::now();
-            std::chrono::duration<double, std::milli> ms_double = end_time - start_time;
-            lastTickTimeMs = ms_double.count();
-        } else {
-            //lastTickTimeMs = 0.0; // На паузе ядро не считается
         }
 
         ImGui_ImplOpenGL3_NewFrame();
@@ -96,8 +139,7 @@ uint32_t GUI::getHeatmapColor(float value) {
 
 void GUI::drawLegend() {
     ImGui::Text("Legend:");    
-    if(currentViewMode < VIEW_HEATMAP_ENERGY)
-    {
+    if(currentViewMode < VIEW_HEATMAP_ENERGY) {
         ImGui::BulletText("Blue: Herbivore | Yellow: Omnivore | Red: Carnivore");
         ImGui::BulletText("Green: Plants | Gray: Fertility");
     } else if (currentViewMode >= VIEW_HEATMAP_ENERGY) {
@@ -109,19 +151,16 @@ void GUI::drawLegend() {
         float height = 15.0f;
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
         
-        // Корректный градиент: Синий -> Зеленый
         draw_list->AddRectFilledMultiColor(p, ImVec2(p.x + width/2, p.y + height),
             IM_COL32(0, 0, 255, 255), IM_COL32(255, 255, 0, 255),
             IM_COL32(255, 255, 0, 255), IM_COL32(0, 0, 255, 255));
         
-        // Корректный градиент: Зеленый -> Красный
         draw_list->AddRectFilledMultiColor(ImVec2(p.x + width/2, p.y), ImVec2(p.x + width, p.y + height),
             IM_COL32(255, 255, 0, 255), IM_COL32(255, 0, 0, 255),
             IM_COL32(255, 0, 0, 255), IM_COL32(255, 255, 0, 255));
             
         ImGui::InvisibleButton("heatmap_legend", ImVec2(width, height));
         
-        // Интерактивное управление подсветкой при наведении и зажатии
         if (ImGui::IsItemHovered()) {
             float mouse_x = ImGui::GetMousePos().x - p.x;
             float normalized_val = std::clamp(mouse_x / width, 0.0f, 1.0f);
@@ -157,7 +196,14 @@ void GUI::renderFileMenu() {
     if (ImGui::Button(isPaused ? "Resume Sim" : "Pause Sim")) isPaused = !isPaused;
     ImGui::SameLine();
     if (ImGui::Button("Restart")) {
+        std::lock_guard<std::mutex> lock(simMutex);
         simulation.restart("config.json");
+        // Синхронизируем UI с новыми настройками
+        ui_sunlight = simulation.sunlight_base;
+        ui_fertility = simulation.fertility_decay;
+        ui_mutation = simulation.mutation_step;
+        ui_replace = simulation.replace_factor;
+
         historyTicks.clear();
         historyAnimals.clear();
         historyHerbivores.clear();
@@ -165,13 +211,20 @@ void GUI::renderFileMenu() {
         historyCarnivores.clear();
         historyPlants.clear();
         forceStatsUpdate = true;
+        snapshotRequested = true;
     }
 
     ImGui::Separator();
     ImGui::Text("Load Snapshot (.bin)");
     ImGui::InputText("Path", loadPathBuffer, IM_ARRAYSIZE(loadPathBuffer));
     if (ImGui::Button("Load State")) {
+        std::lock_guard<std::mutex> lock(simMutex);
         if (simulation.loadSnapshot(loadPathBuffer)) {
+            ui_sunlight = simulation.sunlight_base;
+            ui_fertility = simulation.fertility_decay;
+            ui_mutation = simulation.mutation_step;
+            ui_replace = simulation.replace_factor;
+
             historyTicks.clear();
             historyAnimals.clear();
             historyHerbivores.clear();
@@ -179,6 +232,7 @@ void GUI::renderFileMenu() {
             historyCarnivores.clear();
             historyPlants.clear();
             forceStatsUpdate = true;
+            snapshotRequested = true;
         }
     }
     ImGui::End();
@@ -186,11 +240,52 @@ void GUI::renderFileMenu() {
 
 void GUI::renderGeneWindow() {
     ImGui::Begin("Gene Distribution", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-    int currentTick = simulation.getTick();
     
-    // Снижаем частоту полного пересчета (11 сортировок массивов) до 1 раза в 5 тиков для плавности UI
+    int currentTick;
+    {
+        std::lock_guard<std::mutex> snap_lock(snapMutex);
+        currentTick = snapTick;
+    }
+    
     if (currentTick - lastStatTick >= 5 || forceStatsUpdate) {
-        geneStatsCache = simulation.getGeneStatistics();
+        // СБОР СТАТИСТИКИ ТЕПЕРЬ ПРОИСХОДИТ БЕЗ БЛОКИРОВКИ ЯДРА ИЗ КОПИИ
+        std::vector<float> diet, size, speed, power, threshold, mutab, impuls, sight, smell, energy, age;
+        
+        {
+            std::lock_guard<std::mutex> snap_lock(snapMutex);
+            for (const auto& cell : snapGrid) {
+                if (cell.animal.alive) {
+                    const auto& g = cell.animal.genes;
+                    diet.push_back(g.dietBias);
+                    size.push_back(g.size);
+                    speed.push_back(g.speed);
+                    power.push_back(g.power);
+                    threshold.push_back(g.threshold);
+                    mutab.push_back(g.mutability);
+                    impuls.push_back(g.impulsivity);
+                    sight.push_back(g.sight);
+                    smell.push_back(g.smell);
+                    energy.push_back(cell.animal.energy);
+                    age.push_back(static_cast<float>(cell.animal.age));
+                }
+            }
+        }
+
+        auto calc = [](std::vector<float>& vec) -> GeneStats {
+            if (vec.empty()) return { 0, 0, 0 };
+            std::sort(vec.begin(), vec.end());
+            return { vec.front(), vec.back(), vec[vec.size() / 2] };
+        };
+
+        geneStatsCache = {
+            {"1. Diet (0=H, 1=C)", calc(diet)}, {"2. Size", calc(size)},
+            {"3. Speed", calc(speed)},          {"4. Power", calc(power)},
+            {"5. Threshold", calc(threshold)},  {"6. Mutability", calc(mutab)},
+            {"7. Impulsivity", calc(impuls)},   {"8. Sight", calc(sight)},
+            {"9. Smell", calc(smell)},          {"~ Energy", calc(energy)},
+            {"~ Age", calc(age)}
+        };
+
         lastStatTick = currentTick;
         forceStatsUpdate = false;
     }
@@ -215,10 +310,9 @@ void GUI::renderGeneWindow() {
 }
 
 void GUI::renderImGui() {
-    int currentTick = simulation.getTick();
+    int currentTick = 0;
     int herbCount = 0, omniCount = 0, carnCount = 0, plantCount = 0, animalCount = 0;
-    const auto& grid = simulation.getGrid();
-
+    
     auto getDietColor = [](float diet) -> uint32_t {
         uint8_t r, g, b;
         if (diet < 0.5f) {
@@ -235,82 +329,84 @@ void GUI::renderImGui() {
         return 0xFF000000 | (b << 16) | (g << 8) | r;
     };
 
-    // --- НАЧАЛО ЦИКЛА ОБРАБОТКИ ПИКСЕЛЕЙ СЕТКИ ---
-    for (size_t i = 0; i < grid.size(); ++i) {
-        bool hasAnimal = grid[i].animal.alive;
-        bool hasPlant = !grid[i].plants.empty();
+    { // Открываем безопасную зону для работы с фотоснимком кадра
+        std::lock_guard<std::mutex> snap_lock(snapMutex);
+        currentTick = snapTick;
+        const auto& grid = snapGrid;
 
-        if (hasAnimal) {
-            animalCount++;
-            float d = grid[i].animal.genes.dietBias;
-            if (d < 0.35f) herbCount++;
-            else if (d > 0.65f) carnCount++;
-            else omniCount++;
-        }
-        if (hasPlant) plantCount += grid[i].plants.size();
+        for (size_t i = 0; i < grid.size(); ++i) {
+            bool hasAnimal = grid[i].animal.alive;
+            bool hasPlant = !grid[i].plants.empty();
 
-        uint32_t color = 0xFF000000;
-        bool cellMatchesHighlight = false;
-
-        if (currentViewMode >= VIEW_HEATMAP_ENERGY) {
             if (hasAnimal) {
-                float val = 0.0f;
-                const auto& g = grid[i].animal.genes;
-                switch (currentViewMode) {
-                    case VIEW_HEATMAP_ENERGY: val = grid[i].animal.energy / (g.size * 10.0f); break;
-                    case VIEW_HEATMAP_FERTILITY: val = grid[i].fertility / 255; break;
-                    case VIEW_HEATMAP_AGE: val = grid[i].animal.age / (simulation.maxAge + g.size * 20.0f); break;
-                    case VIEW_HEATMAP_DIET: val = g.dietBias; break; 
-                    case VIEW_HEATMAP_SIZE: val = g.size / 10.0f; break;
-                    case VIEW_HEATMAP_SPEED: val = g.speed; break;
-                    case VIEW_HEATMAP_POWER: val = g.power / 2.0f; break;
-                    case VIEW_HEATMAP_THRESHOLD: val = (g.threshold - 0.3f) / 0.6f; break;
-                    case VIEW_HEATMAP_MUTABILITY: val = g.mutability / 0.5f; break;
-                    case VIEW_HEATMAP_IMPULSIVITY: val = g.impulsivity; break;
-                    case VIEW_HEATMAP_SIGHT: val = g.sight; break;
-                    case VIEW_HEATMAP_SMELL: val = g.smell; break;
-                }
-
-                if (currentViewMode == VIEW_HEATMAP_DIET) {
-                    color = getDietColor(g.dietBias);
-                } else {
-                    color = getHeatmapColor(std::clamp(val, 0.0f, 1.0f));
-                }
-
-                if (std::abs(val - highlightValue) <= highlightDeviation) cellMatchesHighlight = true;
+                animalCount++;
+                float d = grid[i].animal.genes.dietBias;
+                if (d < 0.35f) herbCount++;
+                else if (d > 0.65f) carnCount++;
+                else omniCount++;
             }
-        } else if (currentViewMode == VIEW_PLANT_DENSITY) {
-            if (hasPlant) {
-                float val = std::min((float)grid[i].plants.size() / 2.0f, 1.0f);
-                color |= (static_cast<uint8_t>(val * 255.0f) << 8);
-            }
-        } else {
-            bool drawAnimal = hasAnimal && (currentViewMode == VIEW_CLASSIC || currentViewMode == VIEW_ANIMALS_ONLY);
-            bool drawPlant = hasPlant && (currentViewMode == VIEW_CLASSIC || currentViewMode == VIEW_PLANTS_ONLY);
+            if (hasPlant) plantCount += grid[i].plants.size();
 
-            if (drawAnimal) {
-                color = getDietColor(grid[i].animal.genes.dietBias);
-            } else if (drawPlant) {
-                color |= (255 << 8);
+            uint32_t color = 0xFF000000;
+            bool cellMatchesHighlight = false;
+
+            if (currentViewMode >= VIEW_HEATMAP_ENERGY) {
+                if (hasAnimal) {
+                    float val = 0.0f;
+                    const auto& g = grid[i].animal.genes;
+                    switch (currentViewMode) {
+                        case VIEW_HEATMAP_ENERGY: val = grid[i].animal.energy / (g.size * 10.0f); break;
+                        case VIEW_HEATMAP_FERTILITY: val = grid[i].fertility / 255.0f; break;
+                        case VIEW_HEATMAP_AGE: val = grid[i].animal.age / (simulation.maxAge + g.size * 20.0f); break;
+                        case VIEW_HEATMAP_DIET: val = g.dietBias; break; 
+                        case VIEW_HEATMAP_SIZE: val = g.size / 10.0f; break;
+                        case VIEW_HEATMAP_SPEED: val = g.speed; break;
+                        case VIEW_HEATMAP_POWER: val = g.power / 2.0f; break;
+                        case VIEW_HEATMAP_THRESHOLD: val = (g.threshold - 0.3f) / 0.6f; break;
+                        case VIEW_HEATMAP_MUTABILITY: val = g.mutability / 0.5f; break;
+                        case VIEW_HEATMAP_IMPULSIVITY: val = g.impulsivity; break;
+                        case VIEW_HEATMAP_SIGHT: val = g.sight; break;
+                        case VIEW_HEATMAP_SMELL: val = g.smell; break;
+                    }
+
+                    if (currentViewMode == VIEW_HEATMAP_DIET) {
+                        color = getDietColor(g.dietBias);
+                    } else {
+                        color = getHeatmapColor(std::clamp(val, 0.0f, 1.0f));
+                    }
+
+                    if (std::abs(val - highlightValue) <= highlightDeviation) cellMatchesHighlight = true;
+                }
+            } else if (currentViewMode == VIEW_PLANT_DENSITY) {
+                if (hasPlant) {
+                    float val = std::min((float)grid[i].plants.size() / 2.0f, 1.0f);
+                    color |= (static_cast<uint8_t>(val * 255.0f) << 8);
+                }
             } else {
-                int fertility_val = static_cast<int>(grid[i].fertility * 50.0f);
-                uint8_t f = static_cast<uint8_t>(std::min(255, fertility_val));
-                color |= (f << 8) | f;
+                bool drawAnimal = hasAnimal && (currentViewMode == VIEW_CLASSIC || currentViewMode == VIEW_ANIMALS_ONLY);
+                bool drawPlant = hasPlant && (currentViewMode == VIEW_CLASSIC || currentViewMode == VIEW_PLANTS_ONLY);
+
+                if (drawAnimal) {
+                    color = getDietColor(grid[i].animal.genes.dietBias);
+                } else if (drawPlant) {
+                    color |= (255 << 8);
+                } else {
+                    int fertility_val = static_cast<int>(grid[i].fertility * 50.0f);
+                    uint8_t f = static_cast<uint8_t>(std::min(255, fertility_val));
+                    color |= (f << 8) | f;
+                }
             }
-        }
 
-        // Логика затемнения нерелевантных ячеек при зажатой шкале
-        if (isHighlighting && !cellMatchesHighlight && hasAnimal && currentViewMode >= VIEW_HEATMAP_ENERGY) {
-            uint8_t r = (color & 0x000000FF);
-            uint8_t g = (color & 0x0000FF00) >> 8;
-            uint8_t b = (color & 0x00FF0000) >> 16;
-            color = 0xFF000000 | (static_cast<uint8_t>(b * 0.3f) << 16) | (static_cast<uint8_t>(g * 0.3f) << 8) | static_cast<uint8_t>(r * 0.3f);
+            if (isHighlighting && !cellMatchesHighlight && hasAnimal && currentViewMode >= VIEW_HEATMAP_ENERGY) {
+                uint8_t r = (color & 0x000000FF);
+                uint8_t g = (color & 0x0000FF00) >> 8;
+                uint8_t b = (color & 0x00FF0000) >> 16;
+                color = 0xFF000000 | (static_cast<uint8_t>(b * 0.3f) << 16) | (static_cast<uint8_t>(g * 0.3f) << 8) | static_cast<uint8_t>(r * 0.3f);
+            }
+            pixelBuffer[i] = color;
         }
-        pixelBuffer[i] = color;
-    }
-    // --- КОНЕЦ ЦИКЛА ОБРАБОТКИ ПИКСЕЛЕЙ ---
+    }     
 
-    // Обновление исторических данных графиков
     if (!isPaused && currentTick != lastRecordedTick) {
         lastRecordedTick = currentTick;
         historyTicks.push_back((float)currentTick);
@@ -329,14 +425,16 @@ void GUI::renderImGui() {
         }
     }
 
-    // --- Control Panel ---
     ImGui::Begin("Simulation Control");
     ImGui::Text("Tick: %d", currentTick);
-	// --- Вывод FPS и управление лимитом кадров ---
+    
     float currentFps = ImGui::GetIO().Framerate;
     ImGui::Text("GUI FPS: %.1f (%.2f ms/frame)", currentFps, currentFps > 0.0 ? 1000.0f / currentFps : 0.0);
-	ImGui::Text("Core FPS: %.1f (%.3f ms/tick)", lastTickTimeMs > 0.0 ? 1000.0f / lastTickTimeMs : 0.0, lastTickTimeMs);
-    if (ImGui::Checkbox("VSync (Limit FPS)", &vsyncEnabled)) {
+    
+    double coreMs = lastTickTimeMs.load();
+    ImGui::Text("Core TPS: %.1f (%.3f ms/tick)", coreMs > 0.0 ? 1000.0f / coreMs : 0.0, coreMs);
+    
+    if (ImGui::Checkbox("VSync (Limit GUI FPS)", &vsyncEnabled)) {
         SDL_GL_SetSwapInterval(vsyncEnabled ? 1 : 0);
     }
     ImGui::Text("Animals: %d | Plants: %d", animalCount, plantCount);
@@ -355,40 +453,64 @@ void GUI::renderImGui() {
     ImGui::Separator();
     ImGui::Text("Population Intervention:");
     
-    // Компактное размещение кнопок "Добавить" в один ряд
     ImGui::PushItemWidth(100);
     ImGui::InputInt("##animals", &animalsToAdd);
     ImGui::PopItemWidth();
     ImGui::SameLine();
-	ImGui::PushItemWidth(200);
-    if (ImGui::Button("Add Animals")) { simulation.addAnimals(std::max(1, animalsToAdd)); forceStatsUpdate = true; }
+    ImGui::PushItemWidth(200);
+    if (ImGui::Button("Add Animals")) { 
+        std::lock_guard<std::mutex> lock(simMutex);
+        simulation.addAnimals(std::max(1, animalsToAdd)); 
+        forceStatsUpdate = true; 
+    }
     ImGui::SameLine();
-    if (ImGui::Button("Del Animals")) { simulation.removeAnimals(std::max(1, animalsToAdd)); forceStatsUpdate = true; }
+    if (ImGui::Button("Del Animals")) { 
+        std::lock_guard<std::mutex> lock(simMutex);
+        simulation.removeAnimals(std::max(1, animalsToAdd)); 
+        forceStatsUpdate = true; 
+    }
 
-    ImGui::SameLine();
     ImGui::PushItemWidth(100);
     ImGui::InputInt("##plants", &plantsToAdd);
     ImGui::PopItemWidth();
     ImGui::SameLine();
-	ImGui::PushItemWidth(200);
-    if (ImGui::Button("Add Plants")) { simulation.addPlants(std::max(1, plantsToAdd)); }
+    ImGui::PushItemWidth(200);
+    if (ImGui::Button("Add Plants")) { 
+        std::lock_guard<std::mutex> lock(simMutex);
+        simulation.addPlants(std::max(1, plantsToAdd)); 
+    }
     ImGui::SameLine();
-    if (ImGui::Button("Del Plants")) { simulation.removePlants(std::max(1, plantsToAdd)); }
+    if (ImGui::Button("Del Plants")) { 
+        std::lock_guard<std::mutex> lock(simMutex);
+        simulation.removePlants(std::max(1, plantsToAdd)); 
+    }
 
     ImGui::Separator();
     ImGui::Text("Environment Settings:");
-    ImGui::SliderFloat("Sunlight", &simulation.sunlight_base, 0.1f, 5.0f, "%.2f");
-    ImGui::SliderFloat("Fertility Decay", &simulation.fertility_decay, 0.0001f, 0.01f, "%.4f");
+    
+    // Слайдеры используют ЛОКАЛЬНЫЕ переменные UI. 
+    // Ядро блокируется только в тот момент, когда ползунок реально тянется мышкой
+    if (ImGui::SliderFloat("Sunlight", &ui_sunlight, 0.1f, 5.0f, "%.2f")) {
+        std::lock_guard<std::mutex> lock(simMutex);
+        simulation.sunlight_base = ui_sunlight;
+    }
+    if (ImGui::SliderFloat("Fertility Decay", &ui_fertility, 0.0001f, 0.01f, "%.4f")) {
+        std::lock_guard<std::mutex> lock(simMutex);
+        simulation.fertility_decay = ui_fertility;
+    }
     ImGui::Separator();
     ImGui::Text("Mutation Genetics:");
-    ImGui::SliderFloat("Mutation Speed (Step)", &simulation.mutation_step, 0.01f, 1.0f, "%.2f");
-    ImGui::SliderFloat("Random Replace Factor", &simulation.replace_factor, 0.0f, 1.0f, "%.2f");
+    if (ImGui::SliderFloat("Mutation Speed (Step)", &ui_mutation, 0.01f, 1.0f, "%.2f")) {
+        std::lock_guard<std::mutex> lock(simMutex);
+        simulation.mutation_step = ui_mutation;
+    }
+    if (ImGui::SliderFloat("Random Replace Factor", &ui_replace, 0.0f, 1.0f, "%.2f")) {
+        std::lock_guard<std::mutex> lock(simMutex);
+        simulation.replace_factor = ui_replace;
+    }
     ImGui::End();
 
-    // --- World View (Карта) ---
     ImGui::Begin("World View");
-    
-    // ВАЖНО: Обновление текстуры видеокарты происходит строго ОДИН раз за кадр!
     glBindTexture(GL_TEXTURE_2D, gridTexture);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, simulation.getWidth(), simulation.getHeight(), 0, GL_RGBA, GL_UNSIGNED_BYTE, pixelBuffer.data());
     ImGui::Image((void*)(intptr_t)gridTexture, ImVec2(512, 512));
@@ -402,7 +524,8 @@ void GUI::renderImGui() {
         int y = static_cast<int>((mousePos.y - imgMin.y) / imgSize.y * simulation.getHeight());
         
         if (x >= 0 && x < simulation.getWidth() && y >= 0 && y < simulation.getHeight()) {
-            const Cell& cell = simulation.getGrid()[y * simulation.getWidth() + x];
+            std::lock_guard<std::mutex> snap_lock(snapMutex);
+            const Cell& cell = snapGrid[y * simulation.getWidth() + x];
             
             ImGui::BeginTooltip();
             ImGui::Text("Cell: [%d, %d]", x, y);
@@ -427,7 +550,6 @@ void GUI::renderImGui() {
     }
     ImGui::End();
 
-    // --- Analytics ---
     ImGui::Begin("Analytics");
     if (ImPlot::BeginPlot("Population Dynamics", ImVec2(-1, 300), ImPlotFlags_None)) {
         ImPlot::SetupAxes("Tick", "Population", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
@@ -441,4 +563,6 @@ void GUI::renderImGui() {
         ImPlot::EndPlot();
     }
     ImGui::End();
+	
+	snapshotRequested = true; // Запрашиваем новый кадр у ядра
 }

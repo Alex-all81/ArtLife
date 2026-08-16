@@ -5,6 +5,9 @@
 #include <cstdint>
 #include <string>
 #include <map>
+#include <thread>
+#include <mutex>
+#include <atomic>
 
 class GUI {
 public:
@@ -27,7 +30,7 @@ private:
     unsigned int gridTexture; 
     std::vector<uint32_t> pixelBuffer;
 
-       enum ViewMode {
+    enum ViewMode {
         VIEW_CLASSIC = 0,
         VIEW_ANIMALS_ONLY,
         VIEW_PLANTS_ONLY,
@@ -51,14 +54,33 @@ private:
     int plantsToAdd = 5000;
     
     bool isPaused = false;
-	bool vsyncEnabled = true;
-	double lastTickTimeMs = 0.0;
+    bool vsyncEnabled = true;
+    std::atomic<double> lastTickTimeMs{0.0}; // Атомарно, так как пишут и читают разные потоки
     char loadPathBuffer[256] = "";
+
+    // Локальные копии настроек для отвязки UI от ядра
+    float ui_sunlight;
+    float ui_fertility;
+    float ui_mutation;
+    float ui_replace;
 
     // --- Переменные для интерактивной подсветки тепловых карт ---
     bool isHighlighting = false;
     float highlightValue = 0.5f;
     float highlightDeviation = 0.1f;
+
+    // --- АСИНХРОННОСТЬ И МНОГОПОТОЧНОСТЬ ---
+    std::thread simThread;
+    std::atomic<bool> simRunning{false};
+    std::mutex simMutex; // Блокировка вмешательств в ядро
+    
+    std::mutex snapMutex; // Блокировка копии для отрисовки
+    std::vector<Cell> snapGrid;
+    int snapTick = 0;
+    std::atomic<bool> snapshotRequested{true};
+    
+    void simLoop(); // Фоновый бесконечный цикл расчетов
+    // ---------------------------------------
 
     // Кеш статистики генов
     int lastStatTick = -1;
