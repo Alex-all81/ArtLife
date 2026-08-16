@@ -70,6 +70,7 @@ private:
     bool isHighlighting = false;
     float highlightValue = 0.5f;
     float highlightDeviation = 0.1f;
+	float currentHighlightPercentage = 0.0f;
 
     // --- АСИНХРОННОСТЬ, МНОГОПОТОЧНОСТЬ И ОЧЕРЕДЬ КОМАНД ---
     std::thread simThread;

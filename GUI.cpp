@@ -155,7 +155,21 @@ void GUI::drawLegend() {
         ImGui::BulletText("Blue: Herbivore | Yellow: Omnivore | Red: Carnivore");
         ImGui::BulletText("Green: Plants | Gray: Fertility");
     } else if (currentViewMode >= VIEW_HEATMAP_ENERGY) {
-        ImGui::Text("Low");
+        
+        // Определяем текст для краев шкалы (минимум и максимум)
+        std::string low_text = "0.0";
+        std::string high_text = "1.0";
+        switch(currentViewMode) {
+            case VIEW_HEATMAP_ENERGY: 
+            case VIEW_HEATMAP_AGE:       low_text = "0%";   high_text = "100%";  break;
+            case VIEW_HEATMAP_FERTILITY: low_text = "0.0";  high_text = "255.0"; break;
+            case VIEW_HEATMAP_SIZE:      low_text = "0.0";  high_text = "10.0";  break;
+            case VIEW_HEATMAP_POWER:     low_text = "0.0";  high_text = "2.0";   break;
+            case VIEW_HEATMAP_THRESHOLD: low_text = "0.3";  high_text = "0.9";   break;
+            case VIEW_HEATMAP_MUTABILITY:low_text = "0.0";  high_text = "0.5";   break;
+        }
+
+        ImGui::Text("%s", low_text.c_str());
         ImGui::SameLine();
         
         ImVec2 p = ImGui::GetCursorScreenPos();
@@ -178,18 +192,38 @@ void GUI::drawLegend() {
             float normalized_val = std::clamp(mouse_x / width, 0.0f, 1.0f);
             
             ImGui::BeginTooltip();
-            ImGui::Text("Value: %.2f", normalized_val);
+            
+            // Вычисляем реальное значение для Tooltip в зависимости от режима
+            if (currentViewMode == VIEW_HEATMAP_ENERGY || currentViewMode == VIEW_HEATMAP_AGE) {
+                ImGui::Text("Value: %.1f %%", normalized_val * 100.0f);
+            } else {
+                float real_val = normalized_val;
+                switch (currentViewMode) {
+                    case VIEW_HEATMAP_FERTILITY: real_val = normalized_val * 255.0f; break;
+                    case VIEW_HEATMAP_SIZE:      real_val = normalized_val * 10.0f; break;
+                    case VIEW_HEATMAP_POWER:     real_val = normalized_val * 2.0f; break;
+                    case VIEW_HEATMAP_THRESHOLD: real_val = normalized_val * 0.6f + 0.3f; break;
+                    case VIEW_HEATMAP_MUTABILITY:real_val = normalized_val * 0.5f; break;
+                }
+                ImGui::Text("Value: %.2f", real_val);
+            }
+            
             uint32_t col = getHeatmapColor(normalized_val);
             ImVec2 col_p = ImGui::GetCursorScreenPos();
             ImGui::GetWindowDrawList()->AddRectFilled(col_p, ImVec2(col_p.x + 20, col_p.y + 20), col);
             ImGui::Dummy(ImVec2(20, 20));
             ImGui::Separator();
             ImGui::Text("Hold Left Click to isolate this value (+/- %.2f)", highlightDeviation);
+			
+			if (isHighlighting) {
+                ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Highlighted: %.3f%% of animals", currentHighlightPercentage);
+            }
+			
             ImGui::EndTooltip();
             
             if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
                 isHighlighting = true;
-                highlightValue = normalized_val;
+                highlightValue = normalized_val; // Изолируем всё ещё по нормализованному значению (для цветового фильтра)
             } else {
                 isHighlighting = false;
             }
@@ -198,7 +232,7 @@ void GUI::drawLegend() {
         }
 
         ImGui::SameLine();
-        ImGui::Text("High");
+        ImGui::Text("%s", high_text.c_str());
     }
 }
 
@@ -332,6 +366,7 @@ void GUI::renderGeneWindow() {
 
 void GUI::renderImGui() {
     int currentTick = 0;
+	int highlightedCount = 0;
     int herbCount = 0, omniCount = 0, carnCount = 0, plantCount = 0, animalCount = 0;
     
     auto getDietColor = [](float diet) -> uint32_t {
@@ -396,7 +431,11 @@ void GUI::renderImGui() {
                         color = getHeatmapColor(std::clamp(val, 0.0f, 1.0f));
                     }
 
-                    if (std::abs(val - highlightValue) <= highlightDeviation) cellMatchesHighlight = true;
+                    if (std::abs(val - highlightValue) <= highlightDeviation) 
+					{
+						cellMatchesHighlight = true;
+						highlightedCount++;
+					}
                 }
             } else if (currentViewMode == VIEW_PLANT_DENSITY) {
                 if (hasPlant) {
@@ -429,6 +468,12 @@ void GUI::renderImGui() {
         }
     } 
     snapshotRequested = true; 
+	
+	if (animalCount > 0) {
+        currentHighlightPercentage = (static_cast<float>(highlightedCount) / animalCount) * 100.0f;
+    } else {
+        currentHighlightPercentage = 0.0f;
+    }
 
     if (!isPaused && currentTick != lastRecordedTick) {
         lastRecordedTick = currentTick;
