@@ -91,10 +91,38 @@ private:
     int lastStatTick = -1;
     bool forceStatsUpdate = true;
     std::map<std::string, GeneStats> geneStatsCache;
+    template <typename T>
+    struct RingBuffer {
+        std::vector<T> data;
+        int offset = 0;
+        
+        void push_back(const T& value, int max_size) {
+            if (data.size() < max_size) {
+                data.push_back(value);
+            } else {
+                data[offset] = value;
+                offset = (offset + 1) % max_size;
+            }
+        }
+        
+        void clear() {
+            data.clear();
+            offset = 0;
+        }
+        
+        int size() const {
+            return static_cast<int>(data.size());
+        }
+        
+        T* get_data() {
+            return data.data();
+        }
+    };
+
 	struct GeneHistory {
-        std::vector<float> min_vals;
-        std::vector<float> median_vals;
-        std::vector<float> max_vals;
+        RingBuffer<float> min_vals;
+        RingBuffer<float> median_vals;
+        RingBuffer<float> max_vals;
     };
     std::map<std::string, GeneHistory> geneHistoryCache; // История для графиков
     std::map<std::string, bool> genePlotExpanded;
@@ -102,10 +130,10 @@ private:
     // Векторы истории для графика
     int maxHistory = 1000;
     int lastRecordedTick = -1;
-    std::vector<float> historyTicks;
-    std::vector<float> historyAnimals;
-    std::vector<float> historyHerbivores;
-    std::vector<float> historyOmnivores;
-    std::vector<float> historyCarnivores;
-    std::vector<float> historyPlants;
+    RingBuffer<float> historyTicks;
+    RingBuffer<float> historyAnimals;
+    RingBuffer<float> historyHerbivores;
+    RingBuffer<float> historyOmnivores;
+    RingBuffer<float> historyCarnivores;
+    RingBuffer<float> historyPlants;
 };

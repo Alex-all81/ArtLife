@@ -348,14 +348,9 @@ void GUI::renderGeneWindow() {
         // Запись истории для мини-графиков
         for (const auto& [name, stat] : geneStatsCache) {
             auto& hist = geneHistoryCache[name];
-            hist.min_vals.push_back(stat.min_val);
-            hist.median_vals.push_back(stat.median);
-            hist.max_vals.push_back(stat.max_val);
-            if (hist.min_vals.size() > maxHistory) {
-                hist.min_vals.erase(hist.min_vals.begin());
-                hist.median_vals.erase(hist.median_vals.begin());
-                hist.max_vals.erase(hist.max_vals.begin());
-            }
+            hist.min_vals.push_back(stat.min_val, maxHistory);
+            hist.median_vals.push_back(stat.median, maxHistory);
+            hist.max_vals.push_back(stat.max_val, maxHistory);
         }
 
         lastStatTick = currentTick;
@@ -378,7 +373,7 @@ void GUI::renderGeneWindow() {
         // Если раскрыто - рисуем спарклайн (чистый график без осей и легенд)
         if (expanded) {
             auto& hist = geneHistoryCache[name];
-            if (!hist.median_vals.empty()) {
+            if (!hist.median_vals.data.empty()) {
 				
 				ImPlot::PushStyleVar(ImPlotStyleVar_FitPadding, ImVec2(0.0f, 0.1f));
                 // Высота 50px, ширина -1 (на всё доступное пространство)
@@ -386,13 +381,13 @@ void GUI::renderGeneWindow() {
                     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoDecorations | ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_NoDecorations | ImPlotAxisFlags_AutoFit);
                     
                     ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.2f, 0.2f, 1.0f)); // Красный (Max)
-                    ImPlot::PlotLine("Max", hist.max_vals.data(), hist.max_vals.size());
+                    ImPlot::PlotLine("Max", hist.max_vals.get_data(), hist.max_vals.size(), 1.0, 0.0, 0, hist.max_vals.offset);
                     
                     ImPlot::SetNextLineStyle(ImVec4(0.2f, 0.6f, 1.0f, 1.0f)); // Синий (Min)
-                    ImPlot::PlotLine("Min", hist.min_vals.data(), hist.min_vals.size());
+                    ImPlot::PlotLine("Min", hist.min_vals.get_data(), hist.min_vals.size(), 1.0, 0.0, 0, hist.min_vals.offset);
 					
 					ImPlot::SetNextLineStyle(ImVec4(1.0f, 1.0f, 0.0f, 1.0f)); // Желтый (Median)
-                    ImPlot::PlotLine("Med", hist.median_vals.data(), hist.median_vals.size());
+                    ImPlot::PlotLine("Med", hist.median_vals.get_data(), hist.median_vals.size(), 1.0, 0.0, 0, hist.median_vals.offset);
 
                     
                     ImPlot::EndPlot();
@@ -519,20 +514,12 @@ void GUI::renderImGui() {
 
     if (!isPaused && currentTick != lastRecordedTick) {
         lastRecordedTick = currentTick;
-        historyTicks.push_back((float)currentTick);
-        historyAnimals.push_back((float)animalCount);
-        historyHerbivores.push_back((float)herbCount);
-        historyOmnivores.push_back((float)omniCount);
-        historyCarnivores.push_back((float)carnCount);
-        historyPlants.push_back((float)plantCount);
-        if (historyTicks.size() > maxHistory) {
-            historyTicks.erase(historyTicks.begin());
-            historyAnimals.erase(historyAnimals.begin());
-            historyHerbivores.erase(historyHerbivores.begin());
-            historyOmnivores.erase(historyOmnivores.begin());
-            historyCarnivores.erase(historyCarnivores.begin());
-            historyPlants.erase(historyPlants.begin());
-        }
+        historyTicks.push_back((float)currentTick, maxHistory);
+        historyAnimals.push_back((float)animalCount, maxHistory);
+        historyHerbivores.push_back((float)herbCount, maxHistory);
+        historyOmnivores.push_back((float)omniCount, maxHistory);
+        historyCarnivores.push_back((float)carnCount, maxHistory);
+        historyPlants.push_back((float)plantCount, maxHistory);
     }
 
     ImGui::Begin("Simulation Control");
@@ -683,12 +670,12 @@ void GUI::renderImGui() {
     ImGui::Begin("Analytics");
     if (ImPlot::BeginPlot("Population Dynamics", ImVec2(-1, 300), ImPlotFlags_None)) {
         ImPlot::SetupAxes("Tick", "Population", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
-        if (!historyTicks.empty()) {
-            ImPlot::PlotLine("Herbivores", historyTicks.data(), historyHerbivores.data(), historyTicks.size());
-            ImPlot::PlotLine("Omnivores(0.35-0.65)", historyTicks.data(), historyOmnivores.data(), historyTicks.size());
-            ImPlot::PlotLine("Carnivores", historyTicks.data(), historyCarnivores.data(), historyTicks.size());
-            ImPlot::PlotLine("Plants", historyTicks.data(), historyPlants.data(), historyTicks.size());
-            ImPlot::PlotLine("Animals", historyTicks.data(), historyAnimals.data(), historyTicks.size());
+        if (historyTicks.size() > 0) {
+            ImPlot::PlotLine("Herbivores", historyTicks.get_data(), historyHerbivores.get_data(), historyTicks.size(), 0, historyTicks.offset);
+            ImPlot::PlotLine("Omnivores(0.35-0.65)", historyTicks.get_data(), historyOmnivores.get_data(), historyTicks.size(), 0, historyTicks.offset);
+            ImPlot::PlotLine("Carnivores", historyTicks.get_data(), historyCarnivores.get_data(), historyTicks.size(), 0, historyTicks.offset);
+            ImPlot::PlotLine("Plants", historyTicks.get_data(), historyPlants.get_data(), historyTicks.size(), 0, historyTicks.offset);
+            ImPlot::PlotLine("Animals", historyTicks.get_data(), historyAnimals.get_data(), historyTicks.size(), 0, historyTicks.offset);
         }
         ImPlot::EndPlot();
     }
