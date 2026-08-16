@@ -481,13 +481,14 @@ void GUI::renderImGui() {
                 }
             } else {
                 bool drawAnimal = hasAnimal && (currentViewMode == VIEW_CLASSIC || currentViewMode == VIEW_ANIMALS_ONLY);
-                bool drawPlant = hasPlant && (currentViewMode == VIEW_CLASSIC || currentViewMode == VIEW_PLANTS_ONLY);
+				bool drawFertility = currentViewMode == VIEW_CLASSIC || currentViewMode == VIEW_PLANTS_ONLY;
+                bool drawPlant = hasPlant && drawFertility;
 
                 if (drawAnimal) {
                     color = getDietColor(grid[i].animal.genes.dietBias);
                 } else if (drawPlant) {
                     color |= (255 << 8);
-                } else {
+                } else if(drawFertility){
                     int fertility_val = static_cast<int>(grid[i].fertility * 50.0f);
                     uint8_t f = static_cast<uint8_t>(std::min(255, fertility_val));
 					// Серый цвет: одинаковая интенсивность для R (f), G (f << 8) и B (f << 16)
