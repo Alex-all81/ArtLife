@@ -8,6 +8,8 @@
 #include <thread>
 #include <mutex>
 #include <atomic>
+#include <queue>
+#include <functional>
 
 class GUI {
 public:
@@ -55,7 +57,7 @@ private:
     
     bool isPaused = false;
     bool vsyncEnabled = true;
-    std::atomic<double> lastTickTimeMs{0.0}; // Атомарно, так как пишут и читают разные потоки
+    std::atomic<double> lastTickTimeMs{0.0};
     char loadPathBuffer[256] = "";
 
     // Локальные копии настроек для отвязки UI от ядра
@@ -69,10 +71,12 @@ private:
     float highlightValue = 0.5f;
     float highlightDeviation = 0.1f;
 
-    // --- АСИНХРОННОСТЬ И МНОГОПОТОЧНОСТЬ ---
+    // --- АСИНХРОННОСТЬ, МНОГОПОТОЧНОСТЬ И ОЧЕРЕДЬ КОМАНД ---
     std::thread simThread;
     std::atomic<bool> simRunning{false};
-    std::mutex simMutex; // Блокировка вмешательств в ядро
+    
+    std::mutex actionMutex; // Очень быстрый мутекс только для очереди команд
+    std::queue<std::function<void()>> actionQueue; // Очередь задач для ядра
     
     std::mutex snapMutex; // Блокировка копии для отрисовки
     std::vector<Cell> snapGrid;

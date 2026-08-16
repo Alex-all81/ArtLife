@@ -30,16 +30,13 @@ GUI::GUI(Simulation& sim) : simulation(sim) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     pixelBuffer.resize(sim.getWidth() * sim.getHeight());
 
-    // Инициализация локальных UI-переменных
     ui_sunlight = sim.sunlight_base;
     ui_fertility = sim.fertility_decay;
     ui_mutation = sim.mutation_step;
     ui_replace = sim.replace_factor;
 
-    // Инициализация стартового снимка для рендера
     snapGrid = simulation.getGrid();
     
-    // Запуск фонового потока расчетов
     simRunning = true;
     simThread = std::thread(&GUI::simLoop, this);
 }
@@ -59,41 +56,56 @@ GUI::~GUI() {
     SDL_Quit();
 }
 
-// --- ФОНОВЫЙ ПОТОК РАСЧЕТОВ ЯДРА ---
+// --- ФОНОВЫЙ ПОТОК РАСЧЕТОВ ЯДРА (С ОЧЕРЕДЬЮ КОМАНД) ---
 void GUI::simLoop() {
     while (simRunning) {
         if (!isPaused) {
             auto start_time = std::chrono::high_resolution_clock::now();
             
-            {
-                std::lock_guard<std::mutex> lock(simMutex);
-                simulation.update();
-                
-                // Делаем мгновенную копию сетки, если UI попросил
-                if (snapshotRequested) {
-                    std::lock_guard<std::mutex> snap_lock(snapMutex);
-                    snapGrid = simulation.getGrid();
-                    snapTick = simulation.getTick();
-                    snapshotRequested = false;
+            // 1. БЫСТРАЯ ФАЗА: Выполняем накопившиеся действия от UI
+            if(!actionQueue.empty())
+			{
+                std::lock_guard<std::mutex> lock(actionMutex);
+                while (!actionQueue.empty()) {
+                    actionQueue.front()(); // Исполняем лямбду
+                    actionQueue.pop();
                 }
-            } // Мьютекс ядра освобожден
+            }
 
-            auto end_time = std::chrono::high_resolution_clock::now();
-            std::chrono::duration<double, std::milli> ms_double = end_time - start_time;
-            lastTickTimeMs = ms_double.count(); 
+            // 2. ТЯЖЕЛАЯ ФАЗА: Расчет симуляции вообще без мьютексов!
+            simulation.update();
             
-            // КРИТИЧЕСКИ ВАЖНО: Даем ОС возможность передать мьютекс потоку интерфейса (кнопки, слайдеры)
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
-            
-        } else {
-            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            // 3. ФАЗА СНИМКА
             if (snapshotRequested) {
-                std::lock_guard<std::mutex> lock(simMutex);
                 std::lock_guard<std::mutex> snap_lock(snapMutex);
                 snapGrid = simulation.getGrid();
                 snapTick = simulation.getTick();
                 snapshotRequested = false;
             }
+
+            auto end_time = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> ms_double = end_time - start_time;
+            lastTickTimeMs = ms_double.count();             
+                        
+        } else {
+            // Даже на паузе проверяем очередь, чтобы кнопки мгновенно работали
+            bool actions_processed = false;
+            {
+                std::lock_guard<std::mutex> lock(actionMutex);
+                while (!actionQueue.empty()) {
+                    actionQueue.front()();
+                    actionQueue.pop();
+                    actions_processed = true;
+                }
+            }
+
+            if (actions_processed || snapshotRequested) {
+                std::lock_guard<std::mutex> snap_lock(snapMutex);
+                snapGrid = simulation.getGrid();
+                snapTick = simulation.getTick();
+                snapshotRequested = false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
         }
     }
 }
@@ -195,15 +207,20 @@ void GUI::renderFileMenu() {
 
     if (ImGui::Button(isPaused ? "Resume Sim" : "Pause Sim")) isPaused = !isPaused;
     ImGui::SameLine();
+    
+    // Передаем действие Restart в ядро через очередь
     if (ImGui::Button("Restart")) {
-        std::lock_guard<std::mutex> lock(simMutex);
-        simulation.restart("config.json");
-        // Синхронизируем UI с новыми настройками
-        ui_sunlight = simulation.sunlight_base;
-        ui_fertility = simulation.fertility_decay;
-        ui_mutation = simulation.mutation_step;
-        ui_replace = simulation.replace_factor;
-
+        {
+            std::lock_guard<std::mutex> lock(actionMutex);
+            actionQueue.push([this]() {
+                simulation.restart("config.json");
+                // Обновляем UI-переменные из потока ядра
+                ui_sunlight = simulation.sunlight_base;
+                ui_fertility = simulation.fertility_decay;
+                ui_mutation = simulation.mutation_step;
+                ui_replace = simulation.replace_factor;
+            });
+        }
         historyTicks.clear();
         historyAnimals.clear();
         historyHerbivores.clear();
@@ -217,23 +234,28 @@ void GUI::renderFileMenu() {
     ImGui::Separator();
     ImGui::Text("Load Snapshot (.bin)");
     ImGui::InputText("Path", loadPathBuffer, IM_ARRAYSIZE(loadPathBuffer));
+    
     if (ImGui::Button("Load State")) {
-        std::lock_guard<std::mutex> lock(simMutex);
-        if (simulation.loadSnapshot(loadPathBuffer)) {
-            ui_sunlight = simulation.sunlight_base;
-            ui_fertility = simulation.fertility_decay;
-            ui_mutation = simulation.mutation_step;
-            ui_replace = simulation.replace_factor;
-
-            historyTicks.clear();
-            historyAnimals.clear();
-            historyHerbivores.clear();
-            historyOmnivores.clear();
-            historyCarnivores.clear();
-            historyPlants.clear();
-            forceStatsUpdate = true;
-            snapshotRequested = true;
+        std::string path = loadPathBuffer; // копируем строку для лямбды
+        {
+            std::lock_guard<std::mutex> lock(actionMutex);
+            actionQueue.push([this, path]() {
+                if (simulation.loadSnapshot(path)) {
+                    ui_sunlight = simulation.sunlight_base;
+                    ui_fertility = simulation.fertility_decay;
+                    ui_mutation = simulation.mutation_step;
+                    ui_replace = simulation.replace_factor;
+                }
+            });
         }
+        historyTicks.clear();
+        historyAnimals.clear();
+        historyHerbivores.clear();
+        historyOmnivores.clear();
+        historyCarnivores.clear();
+        historyPlants.clear();
+        forceStatsUpdate = true;
+        snapshotRequested = true;
     }
     ImGui::End();
 }
@@ -248,7 +270,6 @@ void GUI::renderGeneWindow() {
     }
     
     if (currentTick - lastStatTick >= 5 || forceStatsUpdate) {
-        // СБОР СТАТИСТИКИ ТЕПЕРЬ ПРОИСХОДИТ БЕЗ БЛОКИРОВКИ ЯДРА ИЗ КОПИИ
         std::vector<float> diet, size, speed, power, threshold, mutab, impuls, sight, smell, energy, age;
         
         {
@@ -356,7 +377,7 @@ void GUI::renderImGui() {
                     const auto& g = grid[i].animal.genes;
                     switch (currentViewMode) {
                         case VIEW_HEATMAP_ENERGY: val = grid[i].animal.energy / (g.size * 10.0f); break;
-                        case VIEW_HEATMAP_FERTILITY: val = grid[i].fertility / 255.0f; break;
+                        case VIEW_HEATMAP_FERTILITY: val = grid[i].fertility / 255.0f; break; 
                         case VIEW_HEATMAP_AGE: val = grid[i].animal.age / (simulation.maxAge + g.size * 20.0f); break;
                         case VIEW_HEATMAP_DIET: val = g.dietBias; break; 
                         case VIEW_HEATMAP_SIZE: val = g.size / 10.0f; break;
@@ -405,7 +426,8 @@ void GUI::renderImGui() {
             }
             pixelBuffer[i] = color;
         }
-    }     
+    } 
+    snapshotRequested = true; 
 
     if (!isPaused && currentTick != lastRecordedTick) {
         lastRecordedTick = currentTick;
@@ -458,15 +480,23 @@ void GUI::renderImGui() {
     ImGui::PopItemWidth();
     ImGui::SameLine();
     ImGui::PushItemWidth(200);
+    
+    // Передаем добавление/удаление через очередь
     if (ImGui::Button("Add Animals")) { 
-        std::lock_guard<std::mutex> lock(simMutex);
-        simulation.addAnimals(std::max(1, animalsToAdd)); 
+        int c = std::max(1, animalsToAdd);
+        {
+            std::lock_guard<std::mutex> lock(actionMutex);
+            actionQueue.push([this, c]() { simulation.addAnimals(c); });
+        }
         forceStatsUpdate = true; 
     }
     ImGui::SameLine();
     if (ImGui::Button("Del Animals")) { 
-        std::lock_guard<std::mutex> lock(simMutex);
-        simulation.removeAnimals(std::max(1, animalsToAdd)); 
+        int c = std::max(1, animalsToAdd);
+        {
+            std::lock_guard<std::mutex> lock(actionMutex);
+            actionQueue.push([this, c]() { simulation.removeAnimals(c); });
+        }
         forceStatsUpdate = true; 
     }
 
@@ -475,38 +505,50 @@ void GUI::renderImGui() {
     ImGui::PopItemWidth();
     ImGui::SameLine();
     ImGui::PushItemWidth(200);
+    
     if (ImGui::Button("Add Plants")) { 
-        std::lock_guard<std::mutex> lock(simMutex);
-        simulation.addPlants(std::max(1, plantsToAdd)); 
+        int c = std::max(1, plantsToAdd);
+        {
+            std::lock_guard<std::mutex> lock(actionMutex);
+            actionQueue.push([this, c]() { simulation.addPlants(c); });
+        }
     }
     ImGui::SameLine();
     if (ImGui::Button("Del Plants")) { 
-        std::lock_guard<std::mutex> lock(simMutex);
-        simulation.removePlants(std::max(1, plantsToAdd)); 
+        int c = std::max(1, plantsToAdd);
+        {
+            std::lock_guard<std::mutex> lock(actionMutex);
+            actionQueue.push([this, c]() { simulation.removePlants(c); });
+        }
     }
 
     ImGui::Separator();
     ImGui::Text("Environment Settings:");
     
-    // Слайдеры используют ЛОКАЛЬНЫЕ переменные UI. 
-    // Ядро блокируется только в тот момент, когда ползунок реально тянется мышкой
+    // Отправляем изменения ползунков в очередь
     if (ImGui::SliderFloat("Sunlight", &ui_sunlight, 0.1f, 5.0f, "%.2f")) {
-        std::lock_guard<std::mutex> lock(simMutex);
-        simulation.sunlight_base = ui_sunlight;
+        float val = ui_sunlight;
+        std::lock_guard<std::mutex> lock(actionMutex);
+        actionQueue.push([this, val]() { simulation.sunlight_base = val; });
     }
     if (ImGui::SliderFloat("Fertility Decay", &ui_fertility, 0.0001f, 0.01f, "%.4f")) {
-        std::lock_guard<std::mutex> lock(simMutex);
-        simulation.fertility_decay = ui_fertility;
+        float val = ui_fertility;
+        std::lock_guard<std::mutex> lock(actionMutex);
+        actionQueue.push([this, val]() { simulation.fertility_decay = val; });
     }
+    
     ImGui::Separator();
     ImGui::Text("Mutation Genetics:");
+    
     if (ImGui::SliderFloat("Mutation Speed (Step)", &ui_mutation, 0.01f, 1.0f, "%.2f")) {
-        std::lock_guard<std::mutex> lock(simMutex);
-        simulation.mutation_step = ui_mutation;
+        float val = ui_mutation;
+        std::lock_guard<std::mutex> lock(actionMutex);
+        actionQueue.push([this, val]() { simulation.mutation_step = val; });
     }
     if (ImGui::SliderFloat("Random Replace Factor", &ui_replace, 0.0f, 1.0f, "%.2f")) {
-        std::lock_guard<std::mutex> lock(simMutex);
-        simulation.replace_factor = ui_replace;
+        float val = ui_replace;
+        std::lock_guard<std::mutex> lock(actionMutex);
+        actionQueue.push([this, val]() { simulation.replace_factor = val; });
     }
     ImGui::End();
 
@@ -563,6 +605,4 @@ void GUI::renderImGui() {
         ImPlot::EndPlot();
     }
     ImGui::End();
-	
-	snapshotRequested = true; // Запрашиваем новый кадр у ядра
 }
