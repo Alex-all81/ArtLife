@@ -91,6 +91,13 @@ private:
     int lastStatTick = -1;
     bool forceStatsUpdate = true;
     std::map<std::string, GeneStats> geneStatsCache;
+	struct GeneHistory {
+        std::vector<float> min_vals;
+        std::vector<float> median_vals;
+        std::vector<float> max_vals;
+    };
+    std::map<std::string, GeneHistory> geneHistoryCache; // История для графиков
+    std::map<std::string, bool> genePlotExpanded;
 
     // Векторы истории для графика
     int maxHistory = 1000;

@@ -261,6 +261,8 @@ void GUI::renderFileMenu() {
         historyOmnivores.clear();
         historyCarnivores.clear();
         historyPlants.clear();
+		geneHistoryCache.clear();
+		lastStatTick = -1;
         forceStatsUpdate = true;
         snapshotRequested = true;
     }
@@ -288,6 +290,8 @@ void GUI::renderFileMenu() {
         historyOmnivores.clear();
         historyCarnivores.clear();
         historyPlants.clear();
+		geneHistoryCache.clear();
+		lastStatTick = -1;
         forceStatsUpdate = true;
         snapshotRequested = true;
     }
@@ -295,7 +299,7 @@ void GUI::renderFileMenu() {
 }
 
 void GUI::renderGeneWindow() {
-    ImGui::Begin("Gene Distribution", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+        ImGui::Begin("Gene Distribution");
     
     int currentTick;
     {
@@ -341,26 +345,64 @@ void GUI::renderGeneWindow() {
             {"~ Age", calc(age)}
         };
 
+        // Запись истории для мини-графиков
+        for (const auto& [name, stat] : geneStatsCache) {
+            auto& hist = geneHistoryCache[name];
+            hist.min_vals.push_back(stat.min_val);
+            hist.median_vals.push_back(stat.median);
+            hist.max_vals.push_back(stat.max_val);
+            if (hist.min_vals.size() > maxHistory) {
+                hist.min_vals.erase(hist.min_vals.begin());
+                hist.median_vals.erase(hist.median_vals.begin());
+                hist.max_vals.erase(hist.max_vals.begin());
+            }
+        }
+
         lastStatTick = currentTick;
         forceStatsUpdate = false;
     }
 
-    if (ImGui::BeginTable("GeneStatsTable", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
-        ImGui::TableSetupColumn("Gene");
-        ImGui::TableSetupColumn("Min");
-        ImGui::TableSetupColumn("Median");
-        ImGui::TableSetupColumn("Max");
-        ImGui::TableHeadersRow();
-
-        for (const auto& [name, stat] : geneStatsCache) {
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0); ImGui::Text("%s", name.c_str());
-            ImGui::TableSetColumnIndex(1); ImGui::Text("%.2f", stat.min_val);
-            ImGui::TableSetColumnIndex(2); ImGui::Text("%.2f", stat.median);
-            ImGui::TableSetColumnIndex(3); ImGui::Text("%.2f", stat.max_val);
+    // Отрисовка списка с кнопками и мини-графиками
+    for (const auto& [name, stat] : geneStatsCache) {
+        bool& expanded = genePlotExpanded[name];
+        
+        // Мини-кнопка [+] или [-]
+        if (ImGui::SmallButton(expanded ? (std::string("-##") + name).c_str() : (std::string("+##") + name).c_str())) {
+            expanded = !expanded;
         }
-        ImGui::EndTable();
+        ImGui::SameLine();
+        
+        // Вывод текста с показателями
+        ImGui::Text("%s [ Min: %.2f | Med: %.2f | Max: %.2f ]", name.c_str(), stat.min_val, stat.median, stat.max_val);
+        
+        // Если раскрыто - рисуем спарклайн (чистый график без осей и легенд)
+        if (expanded) {
+            auto& hist = geneHistoryCache[name];
+            if (!hist.median_vals.empty()) {
+				
+				ImPlot::PushStyleVar(ImPlotStyleVar_FitPadding, ImVec2(0.0f, 0.1f));
+                // Высота 50px, ширина -1 (на всё доступное пространство)
+                if (ImPlot::BeginPlot((std::string("##plot") + name).c_str(), ImVec2(-1, 50), ImPlotFlags_CanvasOnly | ImPlotFlags_NoInputs)) {
+                    ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoDecorations | ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_NoDecorations | ImPlotAxisFlags_AutoFit);
+                    
+                    ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.2f, 0.2f, 1.0f)); // Красный (Max)
+                    ImPlot::PlotLine("Max", hist.max_vals.data(), hist.max_vals.size());
+                    
+                    ImPlot::SetNextLineStyle(ImVec4(0.2f, 0.6f, 1.0f, 1.0f)); // Синий (Min)
+                    ImPlot::PlotLine("Min", hist.min_vals.data(), hist.min_vals.size());
+					
+					ImPlot::SetNextLineStyle(ImVec4(1.0f, 1.0f, 0.0f, 1.0f)); // Желтый (Median)
+                    ImPlot::PlotLine("Med", hist.median_vals.data(), hist.median_vals.size());
+
+                    
+                    ImPlot::EndPlot();
+                }
+				ImPlot::PopStyleVar();
+            }
+        }
+        ImGui::Separator();
     }
+
     ImGui::End();
 }
 
