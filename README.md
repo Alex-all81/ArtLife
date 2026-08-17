@@ -6,6 +6,9 @@ The core vision behind ALife Sim is to strike a perfect balance between blazing-
 
 Initially, the project was conceived as a massively complex sandbox. However, as the underlying simulation complexity rapidly outpaced the visualization capabilities, the decision was made to pivot and release a streamlined Minimum Viable Product (MVP). This MVP ensures that the code remains highly stable, easy to build, and accessible for anyone to run.
 
+> **Inspirator:** The primary driving force behind the [foo52ru (ТехноШаман)](https://github.com/foo52ru) project. I also recommend checking it out:
+>  [Genetic algorithm on YouTube](https://www.youtube.com/watch?v=SfEZSyvbj2w&list=PLnmlxA5EUR3F4BrpqTl0koT5Cx5aXjBIA)
+
 > **Note:** Artificial Intelligence (AI) was actively utilized to assist in the development, architecture, and coding of this project.
 
 ### ✨ Key Features (current state):
